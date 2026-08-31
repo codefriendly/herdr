@@ -861,6 +861,8 @@ pub struct UiConfig {
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
     pub mouse_capture: bool,
+    /// Focus a terminal pane when the pointer enters it. Requires mouse capture. Default: false.
+    pub focus_pane_on_hover: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
     /// Host cursor policy. Default: auto.
@@ -1108,6 +1110,7 @@ impl Default for UiConfig {
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
+            focus_pane_on_hover: false,
             copy_on_select: true,
             host_cursor: HostCursorModeConfig::Auto,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
@@ -1611,13 +1614,16 @@ sidebar_collapsed_mode = "hidden"
     fn mouse_capture_default_on_and_parse() {
         let default_config = Config::default();
         assert!(default_config.ui.mouse_capture);
+        assert!(!default_config.ui.focus_pane_on_hover);
 
         let toml = r#"
 [ui]
 mouse_capture = false
+focus_pane_on_hover = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.mouse_capture);
+        assert!(config.ui.focus_pane_on_hover);
     }
 
     #[test]

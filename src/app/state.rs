@@ -1538,6 +1538,7 @@ pub struct AppState {
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
     pub mouse_capture: bool,
+    pub focus_pane_on_hover: bool,
     pub copy_on_select: bool,
     pub right_click_passthrough_modifiers: Option<KeyModifiers>,
     pub right_click_passthrough: Option<RightClickPassthroughGesture>,
@@ -1696,6 +1697,12 @@ impl AppState {
             pane_ids.extend(tab.panes.keys().copied());
         }
         pane_ids
+    }
+
+    pub(crate) fn active_focused_pane_id(&self) -> Option<crate::layout::PaneId> {
+        self.active
+            .and_then(|idx| self.workspaces.get(idx))
+            .and_then(crate::workspace::Workspace::focused_pane_id)
     }
 
     pub(crate) fn focused_pane_requests_mouse_capture_from(
@@ -1930,6 +1937,7 @@ impl AppState {
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
             mouse_capture: true,
+            focus_pane_on_hover: false,
             copy_on_select: true,
             right_click_passthrough_modifiers: None,
             right_click_passthrough: None,

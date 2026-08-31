@@ -1031,7 +1031,12 @@ impl AppState {
 
             MouseEventKind::Moved if self.mode == Mode::Terminal && !in_sidebar => {
                 if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
+                    let focus_action = self
+                        .focus_pane_on_hover
+                        .then(|| self.mouse_pane_focus_action(info.id))
+                        .flatten();
                     let _ = self.forward_pane_mouse_motion(terminal_runtimes, &info, mouse);
+                    return focus_action;
                 }
             }
 
@@ -2756,6 +2761,56 @@ mod tests {
         assert_eq!(
             input_rx.try_recv().expect("forwarded captured left press"),
             Bytes::from_static(b"\x1b[<0;2;2M")
+        );
+    }
+
+    #[tokio::test]
+    async fn hovering_a_pane_can_focus_it_and_still_forward_mouse_motion() {
+        let mut app = app_for_mouse_test();
+        app.state.focus_pane_on_hover = true;
+        let mut ws = Workspace::test_new("test");
+        let source = ws.tabs[0].root_pane;
+        let target = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(source);
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let info = app
+            .state
+            .pane_info_by_id(target)
+            .expect("target pane info")
+            .clone();
+        let (runtime, mut input_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                info.inner_rect.width,
+                info.inner_rect.height,
+                0,
+                b"\x1b[?1003h\x1b[?1006h",
+                4,
+            );
+        app.state.insert_test_runtime(target, runtime);
+
+        let motion = || {
+            crate::raw_input::RawInputEvent::Mouse(mouse(
+                MouseEventKind::Moved,
+                info.inner_rect.x + 1,
+                info.inner_rect.y + 1,
+            ))
+        };
+
+        assert!(app.handle_raw_input_event(motion()).await);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(target));
+        assert_eq!(
+            input_rx.try_recv().expect("forwarded mouse motion"),
+            Bytes::from_static(b"\x1b[<35;2;2M")
+        );
+
+        assert!(!app.handle_raw_input_event(motion()).await);
+        assert_eq!(
+            input_rx.try_recv().expect("forwarded repeat motion"),
+            Bytes::from_static(b"\x1b[<35;2;2M")
         );
     }
 

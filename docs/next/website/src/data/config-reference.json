@@ -894,6 +894,12 @@
           "description": "Capture mouse input for Herdr's mouse UI."
         },
         {
+          "key": "ui.focus_pane_on_hover",
+          "type": "boolean",
+          "default": "false",
+          "description": "Focus a terminal pane when the pointer enters it. Requires ui.mouse_capture = true."
+        },
+        {
           "key": "ui.copy_on_select",
           "type": "boolean",
           "default": "true",

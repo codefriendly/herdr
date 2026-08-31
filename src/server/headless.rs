@@ -2929,6 +2929,9 @@ impl HeadlessServer {
         );
         let render_neutral_mouse_motion =
             events_are_render_neutral_mouse_motion(&events, self.app.state.mode);
+        let focused_pane_before = (render_neutral_mouse_motion
+            && self.app.state.focus_pane_on_hover)
+            .then(|| self.app.state.active_focused_pane_id());
         if let Some(client) = self.clients.get_mut(&client_id) {
             if host_surface_redraw {
                 client.request_repaint();
@@ -2965,6 +2968,13 @@ impl HeadlessServer {
         // Client-local theme reports were applied above; routing them again would update every
         // pane once per palette entry instead of once per captured batch.
         self.app.route_client_events_from(client_id, events, false);
+        let hover_focus_changed = focused_pane_before
+            .is_some_and(|before| before != self.app.state.active_focused_pane_id());
+        if hover_focus_changed {
+            if let Some(client) = self.clients.get_mut(&client_id) {
+                client.request_semantic_redraw_after_input();
+            }
+        }
         if self.app.take_config_reloaded_from_disk() {
             self.reload_server_config(false);
         } else {
@@ -2989,7 +2999,9 @@ impl HeadlessServer {
 
             false
         } else {
-            foreground_changed || theme_changed || (interaction && !render_neutral_mouse_motion)
+            foreground_changed
+                || theme_changed
+                || (interaction && (!render_neutral_mouse_motion || hover_focus_changed))
         }
     }
 
@@ -8717,6 +8729,48 @@ next_tab = ""
         ] {
             assert!(!events_are_render_neutral_mouse_motion(&events, mode));
         }
+    }
+
+    #[test]
+    fn hover_focus_renders_once_when_crossing_into_a_pane() {
+        let mut server = test_headless_server();
+        server.clients.insert(1, test_app_client(Some(true), 1));
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+
+        let mut workspace = crate::workspace::Workspace::test_new("hover-focus");
+        let source = workspace.tabs[0].root_pane;
+        let target = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(source);
+        server.app.state.workspaces = vec![workspace];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+        server.app.state.focus_pane_on_hover = true;
+        crate::ui::compute_view(
+            &mut server.app.state,
+            Rect::new(0, 0, server.effective_size.0, server.effective_size.1),
+        );
+        let target_info = server
+            .app
+            .state
+            .pane_info_by_id(target)
+            .expect("target pane info")
+            .clone();
+        let motion = || {
+            vec![crate::raw_input::RawInputEvent::Mouse(
+                crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Moved,
+                    column: target_info.inner_rect.x + 1,
+                    row: target_info.inner_rect.y + 1,
+                    modifiers: KeyModifiers::empty(),
+                },
+            )]
+        };
+
+        assert!(server.handle_client_input_events(1, motion()));
+        assert_eq!(server.app.state.active_focused_pane_id(), Some(target));
+        assert!(!server.handle_client_input_events(1, motion()));
     }
 
     fn install_focused_test_runtime(
