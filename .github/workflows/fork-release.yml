@@ -1,0 +1,93 @@
+name: Publish fork build
+
+on:
+  workflow_run:
+    workflows: ["Build artifacts (manual)"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-fork-build
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  publish:
+    if: >-
+      github.repository == 'codefriendly/herdr' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve release metadata
+        id: release
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          echo "tag=codefriendly-${SOURCE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          path: artifacts
+
+      - name: Prepare release assets
+        env:
+          BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir release-assets
+
+          while IFS= read -r -d '' source; do
+            name=$(basename "$source")
+            case "$name" in
+              herdr-linux-*|herdr-macos-*|herdr-windows-*.zip) ;;
+              *) continue ;;
+            esac
+            if [ -e "release-assets/$name" ]; then
+              echo "error: duplicate release asset $name" >&2
+              exit 1
+            fi
+            cp "$source" "release-assets/$name"
+          done < <(find artifacts -type f -print0)
+
+          if ! compgen -G 'release-assets/herdr-*' >/dev/null; then
+            echo "error: the build run contained no Herdr binaries" >&2
+            exit 1
+          fi
+
+          (
+            cd release-assets
+            sha256sum herdr-* > SHA256SUMS
+          )
+
+          cat > RELEASE_NOTES.md <<EOF
+          Manually requested build from \`$SOURCE_BRANCH\` at \`$SOURCE_SHA\`.
+
+          Build workflow: $BUILD_RUN_URL
+          EOF
+
+      - name: Publish release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
+        with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
+          name: Codefriendly build ${{ steps.release.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          files: release-assets/*
+          prerelease: false
+          make_latest: true
+          overwrite_files: true
