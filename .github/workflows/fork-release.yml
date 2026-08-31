@@ -1,52 +1,192 @@
 name: Publish fork build
 
 on:
-  workflow_run:
-    workflows: ["Build artifacts (manual)"]
-    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to build from this fork
+        required: true
+        default: pane-hover-focus
+        type: string
 
 permissions:
-  actions: read
-  contents: write
+  contents: read
 
 concurrency:
-  group: publish-fork-build
+  group: fork-release-${{ inputs.source_ref }}
   cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  RUST_TOOLCHAIN_VERSION: 1.96.1
 
 jobs:
-  publish:
-    if: >-
-      github.repository == 'codefriendly/herdr' &&
-      github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+  resolve:
     runs-on: ubuntu-latest
-
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      tag: ${{ steps.source.outputs.tag }}
     steps:
-      - name: Resolve release metadata
-        id: release
-        env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Resolve source revision
+        id: source
         run: |
           set -euo pipefail
-          echo "tag=codefriendly-${SOURCE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+          commit=$(git rev-parse HEAD)
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "tag=codefriendly-${commit:0:12}" >> "$GITHUB_OUTPUT"
 
+  build:
+    needs: resolve
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-x86_64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            name: herdr-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: herdr-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: herdr-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            name: herdr-windows-x86_64.zip
+
+    runs-on: ${{ matrix.os }}
+    env:
+      LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
+      LIBGHOSTTY_VT_SIMD: 'true'
+
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install Zig
+        if: runner.os != 'macOS'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Restore Homebrew Zig cache
+        if: runner.os == 'macOS'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: homebrew-zig-0.15-${{ runner.os }}-${{ runner.arch }}
+          restore-keys: |
+            homebrew-zig-0.15-${{ runner.os }}-
+
+      - name: Install patched Zig on macOS
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install zig@0.15
+          echo "$(brew --prefix zig@0.15)/bin" >> "$GITHUB_PATH"
+          "$(brew --prefix zig@0.15)/bin/zig" version
+
+      - name: Prefer official Ubuntu mirrors over Azure
+        if: runner.os == 'Linux'
+        run: |
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/azure.archive.ubuntu.com/d' /etc/apt/apt-mirrors.txt
+            echo "Using apt mirrors:"
+            cat /etc/apt/apt-mirrors.txt
+          fi
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /etc/apt/sources.list.d -type f \( -iname '*microsoft*' -o -iname '*azure-cli*' \) -print -delete
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build musl-tools gcc-aarch64-linux-gnu crossbuild-essential-arm64
+
+      - name: Install macOS build tools
+        if: runner.os == 'macOS'
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install cmake ninja
+
+      - name: Set Linux aarch64 linker
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: codefriendly-release-${{ matrix.target }}
+
+      # Match upstream release builds: reuse Cargo/global tool caches, but never stale local Zig output.
+      - name: Remove Zig caches
+        shell: bash
+        run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package artifact
+        if: runner.os != 'Windows'
+        shell: bash
+        run: cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+
+      - name: Package artifact
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\release\herdr.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath ${{ matrix.name }}
+          $version = (& (Join-Path $stage "herdr.exe") --version | Out-String).Trim()
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($version -notmatch [regex]::Escape($cargoVersion) -or $version -match "preview") {
+            throw "Packaged Windows binary has unexpected version identity: $version"
+          }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ matrix.name }}
+          retention-days: 14
+
+  publish:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ github.event.workflow_run.id }}
           path: artifacts
 
       - name: Prepare release assets
         env:
-          BUILD_RUN_URL: ${{ github.event.workflow_run.html_url }}
-          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.commit }}
         run: |
           set -euo pipefail
           mkdir release-assets
@@ -64,10 +204,19 @@ jobs:
             cp "$source" "release-assets/$name"
           done < <(find artifacts -type f -print0)
 
-          if ! compgen -G 'release-assets/herdr-*' >/dev/null; then
-            echo "error: the build run contained no Herdr binaries" >&2
-            exit 1
-          fi
+          expected=(
+            herdr-linux-x86_64
+            herdr-linux-aarch64
+            herdr-macos-x86_64
+            herdr-macos-aarch64
+            herdr-windows-x86_64.zip
+          )
+          for asset in "${expected[@]}"; do
+            if [ ! -f "release-assets/$asset" ]; then
+              echo "error: missing release asset $asset" >&2
+              exit 1
+            fi
+          done
 
           (
             cd release-assets
@@ -75,17 +224,17 @@ jobs:
           )
 
           cat > RELEASE_NOTES.md <<EOF
-          Manually requested build from \`$SOURCE_BRANCH\` at \`$SOURCE_SHA\`.
+          Manually requested Codefriendly build from \`$SOURCE_REF\` at \`$SOURCE_SHA\`.
 
-          Build workflow: $BUILD_RUN_URL
+          This release uses the same targets, optimization settings, toolchain, packaging, and cache strategy as the upstream stable release build.
           EOF
 
       - name: Publish release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          target_commitish: ${{ github.event.workflow_run.head_sha }}
-          name: Codefriendly build ${{ steps.release.outputs.tag }}
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          target_commitish: ${{ needs.resolve.outputs.commit }}
+          name: Codefriendly build ${{ needs.resolve.outputs.tag }}
           body_path: RELEASE_NOTES.md
           files: release-assets/*
           prerelease: false
