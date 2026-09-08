@@ -2185,14 +2185,17 @@ impl ClientShellState {
             MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
             | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}
             MouseEventKind::Moved => {
-                if let Some(hit) = self
+                if let Some(pane_index) = self
                     .hits
                     .panes
                     .iter()
-                    .find(|hit| super::contains(hit.inner_rect, point) && hit.mouse_reporting)
-                    .cloned()
+                    .position(|hit| super::contains(hit.inner_rect, point))
                 {
-                    self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
+                    self.maybe_focus_hovered_pane(pane_index, outcome);
+                    let hit = &self.hits.panes[pane_index];
+                    if hit.mouse_reporting {
+                        self.push_pane_mouse_event(hit, mouse, mouse.modifiers, outcome);
+                    }
                 }
             }
             MouseEventKind::ScrollUp
@@ -2219,6 +2222,29 @@ impl ClientShellState {
             }
             _ => {}
         }
+    }
+
+    fn maybe_focus_hovered_pane(&mut self, pane_index: usize, outcome: &mut ClientShellInput) {
+        if !self.config.focus_pane_on_hover
+            || !self.config.mouse_capture
+            || self.mode != ClientShellMode::Terminal
+            || self.overlay.is_some()
+            || self.popup_pending
+            || self.popup_terminal_id.is_some()
+            || self.pane_mouse_gesture.is_some()
+            || self.selection.is_some()
+            || self.chrome_drag.is_some()
+            || self.workspace_press.is_some()
+            || self.tab_press.is_some()
+            || self.url_click_consumes_until_up
+            || self.replaying_url_click
+            || self.pending_requests.values().any(|pending| {
+                matches!(&pending.kind, PendingEndpointKind::PaneLinkActivate { .. })
+            })
+        {
+            return;
+        }
+        self.request_hover_pane_focus(pane_index, outcome);
     }
 
     fn pane_mouse_position(&self, hit: &PaneHit, mouse: MouseEvent) -> ClientMousePosition {

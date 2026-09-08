@@ -252,6 +252,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Pane apps like lazygit and btop can still receive mouse when they request it.
 # mouse_capture = true
 
+# Focus a terminal pane when the pointer enters it.
+# Requires mouse_capture = true.
+# focus_pane_on_hover = false
+
 # Automatically copy text selected with the mouse.
 # Set false to retain drag or double-click word selection until Ctrl+C,
 # or Cmd+C when the host forwards it, copies and clears it.

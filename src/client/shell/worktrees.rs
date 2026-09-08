@@ -542,6 +542,7 @@ impl ClientShellState {
                 | PendingEndpointKind::IntegrationInstall
                 | PendingEndpointKind::SelectionCopy
                 | PendingEndpointKind::PaneScroll { .. }
+                | PendingEndpointKind::HoverPaneFocus { .. }
                 | PendingEndpointKind::WordSelection { .. }
                 | PendingEndpointKind::PaneLinkActivate { .. }
                 | PendingEndpointKind::CopyMotion { .. }

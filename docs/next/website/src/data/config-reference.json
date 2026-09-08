@@ -900,6 +900,12 @@
           "description": "Capture mouse input for Herdr's mouse UI."
         },
         {
+          "key": "ui.focus_pane_on_hover",
+          "type": "boolean",
+          "default": "false",
+          "description": "Focus a terminal pane when the pointer enters it. Requires ui.mouse_capture = true. Hover focus is paused while a text selection exists; with ui.copy_on_select = false, it resumes only after the retained selection is cleared."
+        },
+        {
           "key": "ui.copy_on_select",
           "type": "boolean",
           "default": "true",

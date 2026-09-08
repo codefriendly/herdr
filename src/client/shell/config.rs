@@ -55,7 +55,7 @@ impl ClientShellState {
         match crate::config::load_live_config() {
             Ok(loaded) => {
                 let agent_panel_sort = self.config.agent_panel_sort;
-                let diagnostics = self.config.apply_live_config(
+                let diagnostics = self.apply_live_client_config(
                     &loaded.config,
                     &loaded.diagnostics,
                     &loaded.invalid_sections,
@@ -89,6 +89,32 @@ impl ClientShellState {
             }
         }
         self.reconcile_input_source();
+    }
+}
+
+impl ClientShellState {
+    // Keep the pre-reload enablement check and cleanup with config application so
+    // callers cannot accidentally derive the transition from the updated config.
+    pub(super) fn apply_live_client_config(
+        &mut self,
+        config: &Config,
+        diagnostics: &[String],
+        invalid_sections: &[String],
+    ) -> Vec<String> {
+        let hover_focus_was_enabled = self.config.focus_pane_on_hover && self.config.mouse_capture;
+        let diagnostics = self
+            .config
+            .apply_live_config(config, diagnostics, invalid_sections);
+        self.reconcile_hover_pane_focuses_after_config_reload(hover_focus_was_enabled);
+        diagnostics
+    }
+
+    fn reconcile_hover_pane_focuses_after_config_reload(&mut self, hover_focus_was_enabled: bool) {
+        if hover_focus_was_enabled
+            && !(self.config.focus_pane_on_hover && self.config.mouse_capture)
+        {
+            self.clear_pending_hover_pane_focuses();
+        }
     }
 }
 
@@ -131,6 +157,7 @@ impl ClientShellConfig {
             prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
             confirm_close: config.ui.confirm_close,
             mouse_capture: config.ui.mouse_capture,
+            focus_pane_on_hover: config.ui.focus_pane_on_hover,
             mouse_scroll_lines: config.ui.mouse_scroll_lines(),
             right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
             redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
@@ -321,6 +348,7 @@ impl ClientShellConfig {
                 self.prompt_new_workspace_name = ui.prompt_new_workspace_name;
                 self.confirm_close = ui.confirm_close;
                 self.mouse_capture = ui.mouse_capture;
+                self.focus_pane_on_hover = ui.focus_pane_on_hover;
                 self.mouse_scroll_lines = ui.mouse_scroll_lines();
                 self.right_click_passthrough_modifiers = ui.right_click_passthrough_modifiers();
                 self.redraw_on_focus_gained = ui.redraw_on_focus_gained;

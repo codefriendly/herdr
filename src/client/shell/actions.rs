@@ -1,5 +1,11 @@
 use super::*;
 
+enum HoverEffectiveFocus<'a> {
+    Untrusted,
+    PendingPane(&'a str),
+    Snapshot,
+}
+
 impl ClientShellState {
     pub(super) fn record_binding(
         &mut self,
@@ -405,6 +411,7 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
+        let boot_id = snapshot.boot_id.clone();
         let confirmation_workspace_id = match &method {
             crate::api::schema::Method::TabClose(target) => snapshot
                 .tabs
@@ -421,24 +428,388 @@ impl ClientShellState {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         let request_id = format!("client-shell:{request_id}");
+        let record_generic_focus = matches!(kind, PendingEndpointKind::Generic);
         self.pending_requests.insert(
             request_id.clone(),
             PendingEndpointRequest {
-                boot_id: snapshot.boot_id.clone(),
+                boot_id: boot_id.clone(),
                 method_name,
                 confirmation_workspace_id,
                 kind,
             },
         );
+        if record_generic_focus {
+            self.record_generic_focus_intent(&method, &request_id);
+        }
         outcome.actions.push(ClientShellAction::Endpoint {
             endpoint_id: self.active_endpoint_id.clone(),
-            boot_id: snapshot.boot_id.clone(),
+            boot_id,
             request: Box::new(crate::api::schema::Request {
                 id: request_id,
                 method,
             }),
         });
         true
+    }
+
+    pub(super) fn request_hover_pane_focus(
+        &mut self,
+        pane_index: usize,
+        outcome: &mut ClientShellInput,
+    ) {
+        if !self.endpoint_is_online(&self.active_endpoint_id)
+            || !self.supports_endpoint_method_name("pane.focus")
+        {
+            return;
+        }
+        let pane_id = &self.hits.panes[pane_index].pane_id;
+        if self.hover_slot.is_none()
+            && matches!(self.hover_effective_focus(), HoverEffectiveFocus::Snapshot)
+            && self
+                .snapshot
+                .as_deref()
+                .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
+                == Some(pane_id.as_str())
+        {
+            self.hover_pane_focus = None;
+            return;
+        }
+        // Retain ownership only for a changed pointer intent, not each motion cell.
+        // Still consult ordered focus effects below: the snapshot may precede a
+        // manual focus request even when it already names this pane.
+        if let Some(hover) = self
+            .hover_pane_focus
+            .as_mut()
+            .filter(|hover| hover.pane_id == *pane_id)
+        {
+            hover.generation = self.next_focus_generation;
+        } else {
+            self.hover_pane_focus = Some(ClientHoverPaneFocus {
+                pane_id: pane_id.clone(),
+                generation: self.next_focus_generation,
+            });
+        }
+        if self.hover_slot.is_some() || self.should_skip_hover(pane_id) {
+            return;
+        }
+        self.emit_hover_pane_focus(pane_id.clone(), outcome);
+    }
+
+    fn emit_hover_pane_focus(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
+        let method = crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget {
+            pane_id: pane_id.clone(),
+        });
+        let generation = self.next_focus_generation;
+        self.next_focus_generation = self.next_focus_generation.saturating_add(1);
+        let action_index = outcome.actions.len();
+        if !self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::HoverPaneFocus {
+                pane_id: pane_id.clone(),
+                generation,
+            },
+            outcome,
+        ) {
+            return;
+        }
+        let Some(request_id) = outcome.actions.get(action_index).and_then(|action| {
+            let ClientShellAction::Endpoint { request, .. } = action else {
+                return None;
+            };
+            Some(request.id.clone())
+        }) else {
+            return;
+        };
+        self.hover_pane_focus = Some(ClientHoverPaneFocus {
+            pane_id: pane_id.clone(),
+            generation,
+        });
+        self.hover_slot = Some(ClientHoverSlot {
+            endpoint_id: self.active_endpoint_id.clone(),
+            request_id,
+            pane_id,
+            generation,
+            snapshot_seen: false,
+            invalidated: false,
+        });
+    }
+
+    pub(crate) fn flush_coalesced_hover_pane_focus(&mut self, outcome: &mut ClientShellInput) {
+        if !(self.config.focus_pane_on_hover && self.config.mouse_capture) {
+            return;
+        }
+        let Some(hover) = self.hover_pane_focus.as_ref() else {
+            return;
+        };
+        if self.hover_slot.is_some() || self.should_skip_hover(&hover.pane_id) {
+            return;
+        }
+        if !self.endpoint_is_online(&self.active_endpoint_id)
+            || !self.supports_endpoint_method_name("pane.focus")
+        {
+            return;
+        }
+        self.emit_hover_pane_focus(hover.pane_id.clone(), outcome);
+    }
+
+    fn should_skip_hover(&self, pane_id: &str) -> bool {
+        match self.hover_effective_focus() {
+            HoverEffectiveFocus::Untrusted => false,
+            HoverEffectiveFocus::PendingPane(id) => id == pane_id,
+            HoverEffectiveFocus::Snapshot => {
+                self.snapshot
+                    .as_deref()
+                    .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
+                    == Some(pane_id)
+            }
+        }
+    }
+
+    fn hover_effective_focus(&self) -> HoverEffectiveFocus<'_> {
+        let hover = self.hover_awaiting_snapshot.as_ref();
+        let slot = self.hover_slot.as_ref();
+        let mut latest = hover.map(|hover| (hover.generation, hover.pane_id.as_str()));
+        if let Some(slot) = slot {
+            if latest.is_none_or(|(generation, _)| slot.generation > generation) {
+                latest = Some((slot.generation, slot.pane_id.as_str()));
+            }
+        }
+        if let Some(manual) = self.pending_manual_focuses.back() {
+            if latest.is_none_or(|(generation, _)| manual.generation > generation) {
+                return match &manual.target {
+                    PendingManualFocusTarget::Pane(id) => HoverEffectiveFocus::PendingPane(id),
+                    PendingManualFocusTarget::Tab(_)
+                    | PendingManualFocusTarget::Workspace(_)
+                    | PendingManualFocusTarget::PaneDirection => HoverEffectiveFocus::Untrusted,
+                };
+            }
+        }
+        latest.map_or(HoverEffectiveFocus::Snapshot, |(_, pane_id)| {
+            HoverEffectiveFocus::PendingPane(pane_id)
+        })
+    }
+
+    fn record_generic_focus_intent(
+        &mut self,
+        method: &crate::api::schema::Method,
+        request_id: &str,
+    ) {
+        let target = match method {
+            crate::api::schema::Method::PaneFocus(target) => {
+                PendingManualFocusTarget::Pane(target.pane_id.clone())
+            }
+            crate::api::schema::Method::TabFocus(target) => {
+                PendingManualFocusTarget::Tab(target.tab_id.clone())
+            }
+            crate::api::schema::Method::WorkspaceFocus(target) => {
+                PendingManualFocusTarget::Workspace(target.workspace_id.clone())
+            }
+            crate::api::schema::Method::PaneFocusDirection(_) => {
+                PendingManualFocusTarget::PaneDirection
+            }
+            _ => return,
+        };
+        self.hover_pane_focus = None;
+        self.queue_hover_slot_cancel();
+        let generation = self.next_focus_generation;
+        self.next_focus_generation = self.next_focus_generation.saturating_add(1);
+        self.pending_manual_focuses.push_back(PendingManualFocus {
+            request_id: request_id.to_owned(),
+            generation,
+            target,
+            awaiting_snapshot: false,
+            snapshot_seen: false,
+        });
+    }
+
+    fn complete_manual_focus(&mut self, request_id: &str, success: bool) {
+        let Some(index) = self
+            .pending_manual_focuses
+            .iter()
+            .position(|pending| pending.request_id == request_id)
+        else {
+            return;
+        };
+        if !success {
+            self.pending_manual_focuses.remove(index);
+            return;
+        }
+        let generation = self.pending_manual_focuses[index].generation;
+        self.pending_manual_focuses[index].awaiting_snapshot = true;
+        // A later successful request supersedes earlier focus effects, even if their
+        // snapshots were skipped. Keep newer requests until their own result arrives.
+        self.pending_manual_focuses.retain(|pending| {
+            pending.generation > generation
+                || (pending.generation == generation && !pending.snapshot_seen)
+        });
+        if self
+            .hover_awaiting_snapshot
+            .as_ref()
+            .is_some_and(|hover| hover.generation < generation)
+        {
+            self.hover_awaiting_snapshot = None;
+        }
+    }
+
+    fn complete_hover_focus_success(
+        &mut self,
+        pane_id: String,
+        generation: u64,
+        snapshot_seen: bool,
+    ) {
+        self.pending_manual_focuses
+            .retain(|manual| manual.generation > generation);
+        if !snapshot_seen
+            && self
+                .hover_awaiting_snapshot
+                .as_ref()
+                .is_none_or(|hover| hover.generation < generation)
+        {
+            self.hover_awaiting_snapshot = Some(ClientHoverPaneFocus {
+                pane_id,
+                generation,
+            });
+        }
+    }
+
+    pub(super) fn clear_pending_hover_pane_focuses(&mut self) {
+        self.hover_pane_focus = None;
+        self.hover_awaiting_snapshot = None;
+        self.pending_requests.retain(|_, pending| {
+            !matches!(&pending.kind, PendingEndpointKind::HoverPaneFocus { .. })
+        });
+        self.queue_hover_slot_cancel();
+    }
+
+    fn queue_hover_slot_cancel(&mut self) {
+        let Some(slot) = &self.hover_slot else {
+            return;
+        };
+        if !self
+            .cancelled_unsent_request_ids
+            .iter()
+            .any(|(_, request_id)| request_id == &slot.request_id)
+        {
+            self.cancelled_unsent_request_ids
+                .push((slot.endpoint_id.clone(), slot.request_id.clone()));
+        }
+    }
+
+    pub(crate) fn take_cancelled_unsent_endpoint_ids(&mut self) -> Vec<(ClientEndpointId, String)> {
+        std::mem::take(&mut self.cancelled_unsent_request_ids)
+    }
+
+    pub(crate) fn cancel_unsent_hover_request(&mut self, request_id: &str) {
+        self.release_hover_slot(request_id);
+        self.pending_requests.remove(request_id);
+    }
+
+    pub(crate) fn release_hover_slot(&mut self, request_id: &str) {
+        if self
+            .hover_slot
+            .as_ref()
+            .is_some_and(|slot| slot.request_id == request_id)
+        {
+            self.hover_slot = None;
+        }
+    }
+
+    pub(super) fn reconcile_pending_hover_pane_focuses(
+        &mut self,
+        snapshot: &ClientShellSnapshot,
+        workspace_changed: bool,
+    ) {
+        if workspace_changed {
+            if let Some(slot) = self.hover_slot.as_mut() {
+                slot.invalidated = true;
+            }
+            self.hover_pane_focus = None;
+            self.hover_awaiting_snapshot = None;
+            self.pending_manual_focuses.clear();
+            self.pending_requests.retain(|_, pending| {
+                !matches!(&pending.kind, PendingEndpointKind::HoverPaneFocus { .. })
+            });
+            self.queue_hover_slot_cancel();
+            return;
+        }
+        if let Some(focused) = snapshot.focused_pane_id.as_deref() {
+            // A matching snapshot must not erase a newer pointer intent when an
+            // interposed manual request (or a different hover) can still move focus.
+            let settled = match self.hover_effective_focus() {
+                HoverEffectiveFocus::Snapshot => true,
+                HoverEffectiveFocus::PendingPane(pane_id) => pane_id == focused,
+                HoverEffectiveFocus::Untrusted => false,
+            };
+            if settled
+                && self
+                    .hover_pane_focus
+                    .as_ref()
+                    .is_some_and(|hover| hover.pane_id == focused)
+            {
+                self.hover_pane_focus = None;
+            }
+            if let Some(slot) = self.hover_slot.as_mut() {
+                slot.snapshot_seen |= slot.pane_id == focused;
+            }
+            if self
+                .hover_awaiting_snapshot
+                .as_ref()
+                .is_some_and(|hover| hover.pane_id == focused)
+            {
+                self.hover_awaiting_snapshot = None;
+            }
+        }
+        let pane_focus_changed = self
+            .snapshot
+            .as_deref()
+            .is_some_and(|current| current.focused_pane_id != snapshot.focused_pane_id);
+        for pending in &mut self.pending_manual_focuses {
+            pending.snapshot_seen |= match &pending.target {
+                PendingManualFocusTarget::Pane(pane_id) => {
+                    snapshot.focused_pane_id.as_deref() == Some(pane_id.as_str())
+                }
+                PendingManualFocusTarget::Tab(tab_id) => {
+                    snapshot.focused_tab_id.as_deref() == Some(tab_id.as_str())
+                }
+                PendingManualFocusTarget::Workspace(workspace_id) => {
+                    snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())
+                }
+                PendingManualFocusTarget::PaneDirection => {
+                    pending.awaiting_snapshot || pane_focus_changed
+                }
+            };
+        }
+        self.pending_manual_focuses
+            .retain(|pending| !(pending.awaiting_snapshot && pending.snapshot_seen));
+        let pane_missing =
+            |pane_id: &str| !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id);
+        if self
+            .hover_pane_focus
+            .as_ref()
+            .is_some_and(|hover| pane_missing(&hover.pane_id))
+        {
+            self.hover_pane_focus = None;
+        }
+        if self
+            .hover_awaiting_snapshot
+            .as_ref()
+            .is_some_and(|hover| pane_missing(&hover.pane_id))
+        {
+            self.hover_awaiting_snapshot = None;
+        }
+        if let Some(slot) = self
+            .hover_slot
+            .as_mut()
+            .filter(|slot| pane_missing(&slot.pane_id))
+        {
+            slot.invalidated = true;
+            self.pending_requests.retain(|_, pending| {
+                !matches!(&pending.kind, PendingEndpointKind::HoverPaneFocus { .. })
+            });
+            self.queue_hover_slot_cancel();
+        }
+        // Snapshot acknowledgement is not transport completion: retain request
+        // metadata and the slot until its result or confirmed unsent cancellation.
     }
 
     pub(crate) fn receive_endpoint_error(&mut self, message: String) -> bool {
@@ -482,6 +853,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
+        self.release_hover_slot(request_id);
+        // Transport cancellation must not create replacement work on an unavailable lane.
+        self.hover_pane_focus = None;
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };
@@ -508,8 +882,44 @@ impl ClientShellState {
         request_id: &str,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> (bool, Vec<ClientShellAction>) {
+        let completed_slot = if self
+            .hover_slot
+            .as_ref()
+            .is_some_and(|slot| slot.request_id == request_id)
+        {
+            self.hover_slot.take()
+        } else {
+            None
+        };
         let Some(pending) = self.pending_requests.remove(request_id) else {
-            return (false, Vec::new());
+            let mut outcome = ClientShellInput::default();
+            if let Some(slot) = completed_slot {
+                // Config disable never cancels a sent RPC: its effect still matters
+                // after re-enable, unless snapshot cleanup invalidated the target.
+                if !slot.invalidated
+                    && slot.endpoint_id == self.active_endpoint_id
+                    && self
+                        .snapshot
+                        .as_deref()
+                        .is_some_and(|snapshot| snapshot.boot_id == boot_id)
+                    && result.is_ok()
+                {
+                    self.complete_hover_focus_success(
+                        slot.pane_id,
+                        slot.generation,
+                        slot.snapshot_seen,
+                    );
+                } else if result.is_err()
+                    && self
+                        .hover_pane_focus
+                        .as_ref()
+                        .is_some_and(|hover| hover.pane_id == slot.pane_id)
+                {
+                    self.hover_pane_focus = None;
+                }
+                self.flush_coalesced_hover_pane_focus(&mut outcome);
+            }
+            return (false, outcome.actions);
         };
         if pending.boot_id != boot_id
             || self
@@ -529,10 +939,14 @@ impl ClientShellState {
         }
         if let Err(error) = &result {
             let code = error.code.as_deref().unwrap_or("invalid_response");
-            if !matches!(
-                code,
-                "confirmation_required" | "stale_content" | "stale_target"
-            ) {
+            let suppress_notice =
+                matches!(&pending.kind, PendingEndpointKind::HoverPaneFocus { .. });
+            if !suppress_notice
+                && !matches!(
+                    code,
+                    "confirmation_required" | "stale_content" | "stale_target"
+                )
+            {
                 let (kind, notice_code, title, body) = match code {
                     "endpoint_timeout" => (
                         ClientEndpointNoticeKind::Timeout,
@@ -563,7 +977,49 @@ impl ClientShellState {
             }
         }
         match pending.kind {
-            PendingEndpointKind::Generic => {}
+            PendingEndpointKind::HoverPaneFocus {
+                pane_id,
+                generation,
+            } => {
+                let mut outcome = ClientShellInput::default();
+                if result.is_err() {
+                    if self
+                        .hover_awaiting_snapshot
+                        .as_ref()
+                        .is_some_and(|hover| hover.generation == generation)
+                    {
+                        self.hover_awaiting_snapshot = None;
+                    }
+                    if self
+                        .hover_pane_focus
+                        .as_ref()
+                        .is_some_and(|hover| hover.pane_id == pane_id)
+                        && self
+                            .pending_manual_focuses
+                            .back()
+                            .is_none_or(|manual| manual.generation <= generation)
+                    {
+                        self.hover_pane_focus = None;
+                    } else {
+                        self.flush_coalesced_hover_pane_focus(&mut outcome);
+                    }
+                } else {
+                    if completed_slot.as_ref().is_none_or(|slot| !slot.invalidated) {
+                        self.complete_hover_focus_success(
+                            pane_id,
+                            generation,
+                            completed_slot
+                                .as_ref()
+                                .is_some_and(|slot| slot.snapshot_seen),
+                        );
+                    }
+                    self.flush_coalesced_hover_pane_focus(&mut outcome);
+                }
+                return (false, outcome.actions);
+            }
+            PendingEndpointKind::Generic => {
+                self.complete_manual_focus(request_id, result.is_ok());
+            }
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {
                     Ok(_) => (false, Vec::new()),
@@ -894,7 +1350,9 @@ impl ClientShellState {
             }
             Err(_) => true,
         };
-        (repaint, Vec::new())
+        let mut outcome = ClientShellInput::default();
+        self.flush_coalesced_hover_pane_focus(&mut outcome);
+        (repaint, outcome.actions)
     }
 
     pub(super) fn endpoint_method_for_action(

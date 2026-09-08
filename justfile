@@ -75,6 +75,10 @@ build:
 bench-render-scale:
     cargo test --release --locked --bin herdr render_scale_profile -- --ignored --nocapture --test-threads=1
 
+# Non-gating client-shell hover focus profile for 1 and 16 populated panes
+bench-hover-focus:
+    cargo test --release --locked --bin herdr hover_focus_profile -- --ignored --nocapture --test-threads=1
+
 # ~3-5 minute CPU comparison; downloads stable unless HERDR_PERF_BASELINE_BIN is set
 bench-release-smoke:
     cargo build --release --locked

@@ -98,6 +98,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) prompt_new_workspace_name: bool,
     pub(super) confirm_close: bool,
     pub(super) mouse_capture: bool,
+    pub(super) focus_pane_on_hover: bool,
     pub(super) mouse_scroll_lines: usize,
     pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
     pub(super) redraw_on_focus_gained: bool,
@@ -693,6 +694,10 @@ pub(super) enum PendingEndpointKind {
         pane_id: String,
         serial: u64,
     },
+    HoverPaneFocus {
+        pane_id: String,
+        generation: u64,
+    },
     WordSelection {
         pane_id: String,
         absolute_row: u32,
@@ -718,6 +723,36 @@ pub(super) enum PendingEndpointKind {
         generation: u64,
         session_generation: u64,
     },
+}
+
+pub(super) struct ClientHoverPaneFocus {
+    pub(super) pane_id: String,
+    pub(super) generation: u64,
+}
+
+pub(super) struct ClientHoverSlot {
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) request_id: String,
+    pub(super) pane_id: String,
+    pub(super) generation: u64,
+    pub(super) snapshot_seen: bool,
+    // A context change or removed target retires only the focus effect, not sent transport.
+    pub(super) invalidated: bool,
+}
+
+pub(super) enum PendingManualFocusTarget {
+    Pane(String),
+    Tab(String),
+    Workspace(String),
+    PaneDirection,
+}
+
+pub(super) struct PendingManualFocus {
+    pub(super) request_id: String,
+    pub(super) generation: u64,
+    pub(super) target: PendingManualFocusTarget,
+    pub(super) awaiting_snapshot: bool,
+    pub(super) snapshot_seen: bool,
 }
 
 pub(super) struct PendingEndpointRequest {
@@ -955,6 +990,13 @@ pub(crate) struct ClientShellState {
     pub(super) popup_pending: bool,
     pub(super) popup_pending_deadline: Option<std::time::Instant>,
     pub(super) next_request_id: u64,
+    pub(super) hover_pane_focus: Option<ClientHoverPaneFocus>,
+    pub(super) hover_slot: Option<ClientHoverSlot>,
+    pub(super) hover_awaiting_snapshot: Option<ClientHoverPaneFocus>,
+    // Manual and hover requests share issuance order; snapshot focus can lag both.
+    pub(super) next_focus_generation: u64,
+    pub(super) pending_manual_focuses: VecDeque<PendingManualFocus>,
+    pub(super) cancelled_unsent_request_ids: Vec<(ClientEndpointId, String)>,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
@@ -1098,6 +1140,12 @@ impl ClientShellState {
             popup_pending: false,
             popup_pending_deadline: None,
             next_request_id: 1,
+            hover_pane_focus: None,
+            hover_slot: None,
+            hover_awaiting_snapshot: None,
+            next_focus_generation: 1,
+            pending_manual_focuses: VecDeque::new(),
+            cancelled_unsent_request_ids: Vec::new(),
             pending_requests: HashMap::new(),
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
@@ -1208,7 +1256,9 @@ impl ClientShellState {
         self.reveal_focused_tab = true;
         self.last_tab_bar_width = None;
         self.last_composed_size = None;
+        self.clear_pending_hover_pane_focuses();
         self.pending_requests.clear();
+        self.pending_manual_focuses.clear();
         self.pane_scroll_in_flight.clear();
         self.pane_scroll_queued.clear();
         self.pane_scroll_targets.clear();
@@ -1262,6 +1312,11 @@ impl ClientShellState {
         {
             return;
         }
+        let workspace_changed = self.snapshot.as_ref().is_some_and(|current| {
+            current.focused_workspace_id != snapshot.focused_workspace_id
+                || current.focused_tab_id != snapshot.focused_tab_id
+        });
+        self.reconcile_pending_hover_pane_focuses(&snapshot, workspace_changed);
         self.graphics.set_scope(&graphics_scope);
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()
