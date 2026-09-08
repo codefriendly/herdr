@@ -87,6 +87,26 @@ impl EndpointCommands {
             });
     }
 
+    /// Drop an unsent command. In-flight RPCs are left untouched.
+    pub(super) fn cancel_queued(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        request_id: &str,
+    ) -> bool {
+        let Some(lane) = self.lanes.get_mut(endpoint_id) else {
+            return false;
+        };
+        let Some(index) = lane
+            .queued
+            .iter()
+            .position(|command| command.request.id == request_id)
+        else {
+            return false;
+        };
+        lane.queued.remove(index);
+        true
+    }
+
     pub(super) fn send_next(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -537,6 +557,35 @@ mod tests {
             .receive_chunk(&endpoint(), 1, "boot-a", "request-a", true, late_response)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn cancel_queued_drops_unsent_commands_and_leaves_in_flight() {
+        let mut commands = commands_with_in_flight();
+        commands
+            .lanes
+            .get_mut(&endpoint())
+            .unwrap()
+            .queued
+            .push_back(QueuedCommand {
+                generation: 1,
+                boot_id: "boot-a".into(),
+                request: Box::new(Request {
+                    id: "queued-hover".into(),
+                    method: crate::api::schema::Method::WorkspaceList(
+                        crate::api::schema::EmptyParams::default(),
+                    ),
+                }),
+            });
+
+        assert!(commands.cancel_queued(&endpoint(), "queued-hover"));
+        assert!(!commands.cancel_queued(&endpoint(), "queued-hover"));
+        assert!(!commands.cancel_queued(&endpoint(), "request-a"));
+        assert!(has_in_flight(&commands));
+        assert!(commands
+            .lanes
+            .get(&endpoint())
+            .is_some_and(|lane| lane.queued.is_empty()));
     }
 
     #[test]
