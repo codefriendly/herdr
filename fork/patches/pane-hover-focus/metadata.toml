@@ -1,0 +1,12 @@
+name = "pane-hover-focus"
+base_tag = "v0.9.0"
+base_commit = "b99002ac99b09e00b4ca692436cb15a6b0d676f1"
+source_branch = "pane-hover-focus"
+source_commit = "7a7023194477e003adbb7d8dc1a0b86095104257"
+source_tree = "09dbce39fec2fa415720bfc0e5d329456f0a41c7"
+dependencies = []
+patches = [
+  "0001-feat-focus-panes-on-hover.patch",
+  "0002-fix-preserve-hover-focus-ordering-and-interaction-gu.patch",
+  "0003-refactor-simplify-hover-intent-and-test-setup.patch",
+]
