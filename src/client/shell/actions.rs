@@ -435,23 +435,14 @@ impl ClientShellState {
                 .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
                 == Some(pane_id.as_str())
         {
-            self.hover_pane_focus = None;
+            self.desired_hover_pane_id = None;
             return;
         }
         // Retain ownership only for a changed pointer intent, not each motion cell.
         // Still consult ordered focus effects below: the snapshot may precede a
         // manual focus request even when it already names this pane.
-        if let Some(hover) = self
-            .hover_pane_focus
-            .as_mut()
-            .filter(|hover| hover.pane_id == *pane_id)
-        {
-            hover.generation = self.next_focus_generation;
-        } else {
-            self.hover_pane_focus = Some(ClientHoverPaneFocus {
-                pane_id: pane_id.clone(),
-                generation: self.next_focus_generation,
-            });
+        if self.desired_hover_pane_id.as_ref() != Some(pane_id) {
+            self.desired_hover_pane_id = Some(pane_id.clone());
         }
         if self.hover_slot.is_some() || self.should_skip_hover(pane_id) {
             return;
@@ -484,10 +475,6 @@ impl ClientShellState {
         }) else {
             return;
         };
-        self.hover_pane_focus = Some(ClientHoverPaneFocus {
-            pane_id: pane_id.clone(),
-            generation,
-        });
         self.hover_slot = Some(ClientHoverSlot {
             endpoint_id: self.active_endpoint_id.clone(),
             request_id,
@@ -499,19 +486,19 @@ impl ClientShellState {
     }
 
     pub(crate) fn flush_coalesced_hover_pane_focus(&mut self, outcome: &mut ClientShellInput) {
-        if self.hover_pane_focus.is_none() {
+        if self.desired_hover_pane_id.is_none() {
             return;
         }
         if !self.hover_pane_focus_is_eligible() {
             // A guarded interaction supersedes unsent pointer intent. Do not replay
             // it when the guard closes; an already-sent slot still completes normally.
-            self.hover_pane_focus = None;
+            self.desired_hover_pane_id = None;
             return;
         }
-        let Some(hover) = self.hover_pane_focus.as_ref() else {
+        let Some(pane_id) = self.desired_hover_pane_id.as_ref() else {
             return;
         };
-        if self.hover_slot.is_some() || self.should_skip_hover(&hover.pane_id) {
+        if self.hover_slot.is_some() || self.should_skip_hover(pane_id) {
             return;
         }
         if !self.endpoint_is_online(&self.active_endpoint_id)
@@ -519,7 +506,7 @@ impl ClientShellState {
         {
             return;
         }
-        self.emit_hover_pane_focus(hover.pane_id.clone(), outcome);
+        self.emit_hover_pane_focus(pane_id.clone(), outcome);
     }
 
     fn should_skip_hover(&self, pane_id: &str) -> bool {
@@ -591,7 +578,7 @@ impl ClientShellState {
             }
             _ => return,
         };
-        self.hover_pane_focus = None;
+        self.desired_hover_pane_id = None;
         self.queue_hover_slot_cancel();
         let generation = self.next_focus_generation;
         self.next_focus_generation = self.next_focus_generation.saturating_add(1);
@@ -685,7 +672,7 @@ impl ClientShellState {
     }
 
     pub(super) fn clear_pending_hover_pane_focuses(&mut self) {
-        self.hover_pane_focus = None;
+        self.desired_hover_pane_id = None;
         self.hover_awaiting_snapshot = None;
         self.pending_requests.retain(|_, pending| {
             !matches!(&pending.kind, PendingEndpointKind::HoverPaneFocus { .. })
@@ -735,7 +722,7 @@ impl ClientShellState {
             if let Some(slot) = self.hover_slot.as_mut() {
                 slot.invalidated = true;
             }
-            self.hover_pane_focus = None;
+            self.desired_hover_pane_id = None;
             self.hover_awaiting_snapshot = None;
             self.pending_manual_focuses.clear();
             self.pending_requests.retain(|_, pending| {
@@ -754,11 +741,11 @@ impl ClientShellState {
             };
             if settled
                 && self
-                    .hover_pane_focus
-                    .as_ref()
-                    .is_some_and(|hover| hover.pane_id == focused)
+                    .desired_hover_pane_id
+                    .as_deref()
+                    .is_some_and(|pane_id| pane_id == focused)
             {
-                self.hover_pane_focus = None;
+                self.desired_hover_pane_id = None;
             }
             if let Some(slot) = self.hover_slot.as_mut() {
                 slot.snapshot_seen |= slot.pane_id == focused;
@@ -801,11 +788,11 @@ impl ClientShellState {
         let pane_missing =
             |pane_id: &str| !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id);
         if self
-            .hover_pane_focus
-            .as_ref()
-            .is_some_and(|hover| pane_missing(&hover.pane_id))
+            .desired_hover_pane_id
+            .as_deref()
+            .is_some_and(pane_missing)
         {
-            self.hover_pane_focus = None;
+            self.desired_hover_pane_id = None;
         }
         if self
             .hover_awaiting_snapshot
@@ -872,7 +859,7 @@ impl ClientShellState {
     pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
         self.release_hover_slot(request_id);
         // Transport cancellation must not create replacement work on an unavailable lane.
-        self.hover_pane_focus = None;
+        self.desired_hover_pane_id = None;
         let Some(pending) = self.pending_requests.get(request_id) else {
             return false;
         };
@@ -928,11 +915,11 @@ impl ClientShellState {
                     );
                 } else if result.is_err()
                     && self
-                        .hover_pane_focus
-                        .as_ref()
-                        .is_some_and(|hover| hover.pane_id == slot.pane_id)
+                        .desired_hover_pane_id
+                        .as_deref()
+                        .is_some_and(|pane_id| pane_id == slot.pane_id)
                 {
-                    self.hover_pane_focus = None;
+                    self.desired_hover_pane_id = None;
                 }
                 self.flush_coalesced_hover_pane_focus(&mut outcome);
             }
@@ -1011,15 +998,15 @@ impl ClientShellState {
                         self.hover_awaiting_snapshot = None;
                     }
                     if self
-                        .hover_pane_focus
-                        .as_ref()
-                        .is_some_and(|hover| hover.pane_id == pane_id)
+                        .desired_hover_pane_id
+                        .as_deref()
+                        .is_some_and(|desired| desired == pane_id)
                         && self
                             .pending_manual_focuses
                             .back()
                             .is_none_or(|manual| manual.generation <= generation)
                     {
-                        self.hover_pane_focus = None;
+                        self.desired_hover_pane_id = None;
                     } else {
                         self.flush_coalesced_hover_pane_focus(&mut outcome);
                     }
