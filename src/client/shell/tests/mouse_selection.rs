@@ -1033,11 +1033,30 @@ impl SerializedEndpointLane {
         state: &mut ClientShellState,
         request_id: &str,
     ) -> (Vec<(String, String)>, Vec<String>) {
-        let response = serde_json::to_vec(&crate::api::schema::SuccessResponse {
-            id: request_id.to_owned(),
-            result: crate::api::schema::ResponseResult::Ok {},
-        })
-        .expect("encode endpoint success");
+        self.complete_result(
+            state,
+            request_id,
+            Ok(crate::api::schema::ResponseResult::Ok {}),
+        )
+    }
+
+    fn complete_result(
+        &mut self,
+        state: &mut ClientShellState,
+        request_id: &str,
+        result: Result<crate::api::schema::ResponseResult, crate::api::schema::ErrorBody>,
+    ) -> (Vec<(String, String)>, Vec<String>) {
+        let response = match result {
+            Ok(result) => serde_json::to_vec(&crate::api::schema::SuccessResponse {
+                id: request_id.to_owned(),
+                result,
+            }),
+            Err(error) => serde_json::to_vec(&crate::api::schema::ErrorResponse {
+                id: request_id.to_owned(),
+                error,
+            }),
+        }
+        .expect("encode endpoint response");
         let completed = self
             .commands
             .receive_chunk(
@@ -1089,6 +1108,574 @@ fn drain_serialized_lane(
         }
     }
     executed
+}
+
+fn apply_hover_focus_frame(state: &mut ClientShellState, pane_id: &str, revision: u64) {
+    state.set_snapshot(Box::new(snapshot_focused(pane_id, revision)));
+    let mut surface = three_pane_surface(false);
+    surface.projection_revision = revision;
+    surface.surface_revision = revision;
+    for pane in &mut surface.panes {
+        pane.focused = pane.pane_id == pane_id;
+        pane.scroll = Some(crate::protocol::PaneSurfaceScrollMetrics {
+            offset_from_bottom: 0,
+            max_offset_from_bottom: 20,
+            viewport_rows: 2,
+        });
+    }
+    state.set_pane_surface(surface);
+    state.compose(106, 20).expect("coherent hover focus frame");
+}
+
+#[test]
+fn hover_newer_snapshot_seen_success_retires_skipped_older_focus() {
+    let mut state = hover_enabled_three_pane_state(false);
+    let pane_2 = state.hits.panes[1].clone();
+    let pane_3 = state.hits.panes[2].clone();
+    let mut lane = SerializedEndpointLane::new();
+    let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+    let first_id = focus_request_id(&first);
+    lane.dispatch(&mut state, first.actions);
+    let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+    assert!(crossing.actions.is_empty());
+    lane.dispatch(&mut state, crossing.actions);
+
+    // B succeeds without ever publishing B: the next published focus is C.
+    let (focuses, _) = lane.complete_ok(&mut state, &first_id);
+    assert_eq!(focuses.len(), 1);
+    assert_eq!(focuses[0].1, "pane_3");
+    let second_id = focuses[0].0.clone();
+    let recross = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+    assert!(recross.actions.is_empty());
+    lane.dispatch(&mut state, recross.actions);
+    apply_hover_focus_frame(&mut state, "pane_3", 3);
+    assert!(state.hover_slot.as_ref().unwrap().snapshot_seen);
+
+    let (focuses, ids) = lane.complete_ok(&mut state, &second_id);
+    assert_eq!(
+        focuses
+            .iter()
+            .map(|(_, pane)| pane.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pane_2"],
+        "C's acknowledged success must retire skipped B, allowing the latest B intent"
+    );
+    assert!(state.hover_awaiting_snapshot.is_none());
+    assert_eq!(lane.in_flight_id(&ids), Some(focuses[0].0.clone()));
+    apply_hover_focus_frame(&mut state, "pane_2", 4);
+    let (follow_up, _) = lane.complete_ok(&mut state, &focuses[0].0);
+    assert!(follow_up.is_empty());
+    assert!(state.hover_slot.is_none());
+    assert!(state.hover_awaiting_snapshot.is_none());
+    let stay = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+    assert!(stay.actions.is_empty());
+}
+
+fn assert_guard_discards_coalesced_hover(action: crate::input::KeybindAction) {
+    for exit_before_reply in [false, true] {
+        let mut state = hover_enabled_three_pane_state(false);
+        let pane_2 = state.hits.panes[1].clone();
+        let pane_3 = state.hits.panes[2].clone();
+        let mut lane = SerializedEndpointLane::new();
+        let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+        let first_id = focus_request_id(&first);
+        lane.dispatch(&mut state, first.actions);
+        let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+        assert!(crossing.actions.is_empty());
+        lane.dispatch(&mut state, crossing.actions);
+        apply_hover_focus_frame(&mut state, "pane_2", 2);
+
+        let mut enter = ClientShellInput::default();
+        state.record_binding(crate::input::KeybindMatch::Action(action), &mut enter);
+        match action {
+            crate::input::KeybindAction::CopyMode => {
+                assert_eq!(state.mode, ClientShellMode::Copy);
+                assert_eq!(state.copy_mode.as_ref().unwrap().pane_id, "pane_2");
+            }
+            crate::input::KeybindAction::EnterResizeMode => {
+                assert_eq!(state.mode, ClientShellMode::Resize);
+            }
+            crate::input::KeybindAction::Help => {
+                assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+            }
+            _ => panic!("unexpected guard"),
+        }
+        lane.dispatch(&mut state, enter.actions);
+        if exit_before_reply {
+            let exit = state.handle_raw_events(vec![RawInputEvent::Key(
+                crate::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE),
+            )]);
+            lane.dispatch(&mut state, exit.actions);
+            assert_eq!(state.mode, ClientShellMode::Terminal);
+            assert!(state.overlay.is_none());
+        }
+        let (focuses, ids) = lane.complete_ok(&mut state, &first_id);
+        assert!(
+            focuses.is_empty(),
+            "{action:?} must discard deferred hover, exit_before_reply={exit_before_reply}"
+        );
+        assert!(ids.is_empty());
+        assert!(state.hover_pane_focus.is_none());
+        if !exit_before_reply {
+            let exit = state.handle_raw_events(vec![RawInputEvent::Key(
+                crate::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE),
+            )]);
+            lane.dispatch(&mut state, exit.actions);
+        }
+        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert!(state.overlay.is_none());
+        assert!(
+            state.hover_slot.is_none(),
+            "leaving the guard must not replay C"
+        );
+        let fresh = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+        assert_eq!(pane_focus_actions(&fresh.actions)[0].1, "pane_3");
+        assert!(state.visible_endpoint_notice.is_none());
+    }
+}
+
+#[test]
+fn hover_deferred_focus_is_discarded_on_copy_entry() {
+    assert_guard_discards_coalesced_hover(crate::input::KeybindAction::CopyMode);
+}
+
+#[test]
+fn hover_deferred_focus_is_discarded_on_resize_entry() {
+    assert_guard_discards_coalesced_hover(crate::input::KeybindAction::EnterResizeMode);
+}
+
+#[test]
+fn hover_deferred_focus_is_discarded_on_overlay_entry() {
+    assert_guard_discards_coalesced_hover(crate::input::KeybindAction::Help);
+}
+
+#[test]
+fn hover_focused_split_supersedes_older_coalesced_intent_on_serialized_lane() {
+    let mut state = hover_enabled_three_pane_state(false);
+    let pane_2 = state.hits.panes[1].clone();
+    let pane_3 = state.hits.panes[2].clone();
+    let mut lane = SerializedEndpointLane::new();
+    let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+    let first_id = focus_request_id(&first);
+    lane.dispatch(&mut state, first.actions);
+    let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+    lane.dispatch(&mut state, crossing.actions);
+    apply_hover_focus_frame(&mut state, "pane_2", 2);
+    let mut split = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::SplitVertical),
+        &mut split,
+    );
+    let [ClientShellAction::Endpoint { request, .. }] = &split.actions[..] else {
+        panic!("expected split request");
+    };
+    assert!(
+        matches!(&request.method, crate::api::schema::Method::PaneSplit(params) if params.focus)
+    );
+    let split_id = request.id.clone();
+    lane.dispatch(&mut state, split.actions);
+    let (focuses, _) = lane.complete_ok(&mut state, &first_id);
+    assert!(
+        focuses.is_empty(),
+        "newer explicit split must supersede coalesced C"
+    );
+    assert!(state.hover_pane_focus.is_none());
+    assert_eq!(
+        state.pending_manual_focuses.back().unwrap().request_id,
+        split_id
+    );
+    assert_eq!(
+        lane.in_flight_id(std::slice::from_ref(&split_id)),
+        Some(split_id.clone())
+    );
+
+    let mut split_snapshot = snapshot_focused("pane_4", 3);
+    let mut new_pane = split_snapshot.panes[0].clone();
+    new_pane.pane_id = "pane_4".into();
+    new_pane.focused = true;
+    split_snapshot.panes.push(new_pane);
+    state.set_snapshot(Box::new(split_snapshot));
+    let mut split_surface = three_pane_surface(false);
+    split_surface.projection_revision = 3;
+    split_surface.surface_revision = 3;
+    for pane in &mut split_surface.panes {
+        pane.focused = false;
+    }
+    let mut new_pane = split_surface.panes[0].clone();
+    new_pane.pane_id = "pane_4".into();
+    new_pane.focused = true;
+    new_pane.rect.x = 12;
+    new_pane.inner_rect.x = 12;
+    split_surface.panes.push(new_pane);
+    split_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &Buffer::with_lines(["AAA BBB CCC DDD", "AAA BBB CCC DDD"]),
+        None,
+        &[],
+    );
+    state.set_pane_surface(split_surface);
+    state.compose(106, 20).expect("split frame");
+    let (focuses, _) = lane.complete_ok(&mut state, &split_id);
+    assert!(focuses.is_empty());
+    assert!(state.pending_manual_focuses.is_empty());
+    assert!(state.hover_slot.is_none());
+    assert_eq!(state.focused_pane_id().as_deref(), Some("pane_4"));
+    let fresh = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+    assert_eq!(pane_focus_actions(&fresh.actions)[0].1, "pane_3");
+}
+
+#[test]
+fn hover_unfocused_split_preserves_coalesced_intent_on_serialized_lane() {
+    let mut state = hover_enabled_three_pane_state(false);
+    let pane_2 = state.hits.panes[1].clone();
+    let pane_3 = state.hits.panes[2].clone();
+    let mut lane = SerializedEndpointLane::new();
+    let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+    let first_id = focus_request_id(&first);
+    lane.dispatch(&mut state, first.actions);
+    let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+    lane.dispatch(&mut state, crossing.actions);
+    let mut method = state
+        .endpoint_method_for_action(crate::input::KeybindAction::SplitVertical)
+        .unwrap();
+    let crate::api::schema::Method::PaneSplit(params) = &mut method else {
+        panic!("expected split method");
+    };
+    params.focus = false;
+    let mut split = ClientShellInput::default();
+    state.push_endpoint_method(method, &mut split);
+    let [ClientShellAction::Endpoint { request, .. }] = &split.actions[..] else {
+        panic!("expected split request");
+    };
+    let split_id = request.id.clone();
+    assert!(state.pending_manual_focuses.is_empty());
+    lane.dispatch(&mut state, split.actions);
+    let (focuses, _) = lane.complete_ok(&mut state, &first_id);
+    assert_eq!(focuses.len(), 1);
+    assert_eq!(focuses[0].1, "pane_3");
+    assert_eq!(
+        lane.in_flight_id(std::slice::from_ref(&split_id)),
+        Some(split_id.clone())
+    );
+    let (follow_up, _) = lane.complete_ok(&mut state, &split_id);
+    assert!(follow_up.is_empty());
+    assert_eq!(
+        lane.in_flight_id(std::slice::from_ref(&focuses[0].0)),
+        Some(focuses[0].0.clone())
+    );
+    apply_hover_focus_frame(&mut state, "pane_3", 3);
+    assert!(lane.complete_ok(&mut state, &focuses[0].0).0.is_empty());
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HoverCreateKind {
+    Tab,
+    Workspace,
+}
+
+impl HoverCreateKind {
+    fn issue(self, state: &mut ClientShellState) -> ClientShellInput {
+        let mut input = ClientShellInput::default();
+        state.config.prompt_new_tab_name = false;
+        state.config.prompt_new_workspace_name = false;
+        state.record_binding(
+            crate::input::KeybindMatch::Action(match self {
+                Self::Tab => crate::input::KeybindAction::NewTab,
+                Self::Workspace => crate::input::KeybindAction::NewWorkspace,
+            }),
+            &mut input,
+        );
+        input
+    }
+
+    fn issue_unfocused(self, state: &mut ClientShellState) -> ClientShellInput {
+        let mut fixture = hover_enabled_three_pane_state(false);
+        let input = self.issue(&mut fixture);
+        let [ClientShellAction::Endpoint { request, .. }] = &input.actions[..] else {
+            panic!("expected create action");
+        };
+        let mut method = request.method.clone();
+        match &mut method {
+            crate::api::schema::Method::TabCreate(params) => params.focus = false,
+            crate::api::schema::Method::WorkspaceCreate(params) => params.focus = false,
+            _ => panic!("expected create method"),
+        }
+        let mut input = ClientShellInput::default();
+        state.push_endpoint_method(method, &mut input);
+        input
+    }
+
+    fn result(self, focus: bool) -> crate::api::schema::ResponseResult {
+        let workspace_id = match self {
+            Self::Tab => "ws_1",
+            Self::Workspace => "ws_2",
+        };
+        let mut result = serde_json::json!({
+            "type": match self { Self::Tab => "tab_created", Self::Workspace => "workspace_created" },
+            "tab": {
+                "tab_id": "tab_2", "workspace_id": workspace_id, "number": 2,
+                "label": "created", "focused": focus, "pane_count": 1, "agent_status": "unknown"
+            },
+            "root_pane": {
+                "pane_id": "pane_4", "terminal_id": "term_4", "workspace_id": workspace_id,
+                "tab_id": "tab_2", "focused": focus, "agent_status": "unknown", "revision": 1
+            }
+        });
+        if matches!(self, Self::Workspace) {
+            result["workspace"] = serde_json::json!({
+                "workspace_id": workspace_id, "number": 2, "label": "created",
+                "focused": focus, "pane_count": 1, "tab_count": 1,
+                "active_tab_id": "tab_2", "agent_status": "unknown"
+            });
+        }
+        serde_json::from_value(result).expect("typed create result")
+    }
+
+    fn apply_created_context(self, state: &mut ClientShellState) {
+        let mut snapshot = snapshot_focused("pane_4", 5);
+        let workspace_id = match self {
+            Self::Tab => "ws_1",
+            Self::Workspace => "ws_2",
+        };
+        snapshot.focused_workspace_id = Some(workspace_id.into());
+        snapshot.focused_tab_id = Some("tab_2".into());
+        if matches!(self, Self::Workspace) {
+            snapshot.workspaces[0].focused = false;
+            let mut workspace = snapshot.workspaces[0].clone();
+            workspace.workspace_id = workspace_id.into();
+            workspace.active_tab_id = "tab_2".into();
+            workspace.focused = true;
+            snapshot.workspaces.push(workspace);
+        } else {
+            snapshot.workspaces[0].active_tab_id = "tab_2".into();
+        }
+        snapshot.tabs[0].focused = false;
+        let mut tab = snapshot.tabs[0].clone();
+        tab.tab_id = "tab_2".into();
+        tab.workspace_id = workspace_id.into();
+        tab.focused = true;
+        snapshot.tabs.push(tab);
+        let mut pane = snapshot.panes[0].clone();
+        pane.pane_id = "pane_4".into();
+        pane.tab_id = "tab_2".into();
+        pane.workspace_id = workspace_id.into();
+        pane.focused = true;
+        snapshot.panes.push(pane);
+        state.set_snapshot(Box::new(snapshot));
+    }
+}
+
+fn create_request_id(input: &ClientShellInput) -> String {
+    let [ClientShellAction::Endpoint { request, .. }] = &input.actions[..] else {
+        panic!("expected create request");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::TabCreate(_) | crate::api::schema::Method::WorkspaceCreate(_)
+    ));
+    request.id.clone()
+}
+
+fn assert_hover_focused_create_supersedes_coalesced(kind: HoverCreateKind) {
+    for snapshot_first in [false, true] {
+        let mut state = hover_enabled_three_pane_state(false);
+        let pane_2 = state.hits.panes[1].clone();
+        let pane_3 = state.hits.panes[2].clone();
+        let mut lane = SerializedEndpointLane::new();
+        let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+        let first_id = focus_request_id(&first);
+        lane.dispatch(&mut state, first.actions);
+        let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+        assert!(crossing.actions.is_empty());
+        lane.dispatch(&mut state, crossing.actions);
+        let create = kind.issue(&mut state);
+        let create_id = create_request_id(&create);
+        lane.dispatch(&mut state, create.actions);
+        // This pane-only change acknowledges B, not the queued creation.
+        apply_hover_focus_frame(&mut state, "pane_2", 2);
+        let (focuses, ids) = lane.complete_ok(&mut state, &first_id);
+        assert!(
+            focuses.is_empty(),
+            "{kind:?}: old coalesced C must not follow create"
+        );
+        assert!(ids.is_empty());
+        assert!(state.hover_pane_focus.is_none());
+        assert_eq!(
+            lane.in_flight_id(std::slice::from_ref(&create_id)),
+            Some(create_id.clone())
+        );
+        assert!(!state.pending_manual_focuses.back().unwrap().snapshot_seen);
+        if snapshot_first {
+            kind.apply_created_context(&mut state);
+        }
+        assert!(lane
+            .complete_result(&mut state, &create_id, Ok(kind.result(true)))
+            .0
+            .is_empty());
+        if !snapshot_first {
+            // Result-before-context must not let C get sent behind the creation.
+            assert!(state.hover_slot.is_none());
+            assert_eq!(state.pending_manual_focuses.len(), 1);
+            apply_hover_focus_frame(&mut state, "pane_1", 3);
+            assert_eq!(
+                state.pending_manual_focuses.len(),
+                1,
+                "a pane-only snapshot must not acknowledge a created context"
+            );
+            match (&state.pending_manual_focuses.back().unwrap().target, kind) {
+                (PendingManualFocusTarget::Tab(id), HoverCreateKind::Tab) => {
+                    assert_eq!(id, "tab_2")
+                }
+                (PendingManualFocusTarget::Workspace(id), HoverCreateKind::Workspace) => {
+                    assert_eq!(id, "ws_2")
+                }
+                _ => panic!("create response must resolve the context identity"),
+            }
+            kind.apply_created_context(&mut state);
+        }
+        lane.dispatch(&mut state, Vec::new());
+        assert!(state.pending_manual_focuses.is_empty());
+        assert!(state.hover_slot.is_none());
+        assert!(state.pending_requests.is_empty());
+        assert_eq!(state.focused_pane_id().as_deref(), Some("pane_4"));
+    }
+}
+
+#[test]
+fn hover_focused_tab_create_supersedes_coalesced_on_serialized_lane() {
+    assert_hover_focused_create_supersedes_coalesced(HoverCreateKind::Tab);
+}
+
+#[test]
+fn hover_focused_workspace_create_supersedes_coalesced_on_serialized_lane() {
+    assert_hover_focused_create_supersedes_coalesced(HoverCreateKind::Workspace);
+}
+
+#[test]
+fn hover_unfocused_creates_preserve_coalesced_intent_on_serialized_lane() {
+    for kind in [HoverCreateKind::Tab, HoverCreateKind::Workspace] {
+        let mut state = hover_enabled_three_pane_state(false);
+        let pane_2 = state.hits.panes[1].clone();
+        let pane_3 = state.hits.panes[2].clone();
+        let mut lane = SerializedEndpointLane::new();
+        let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+        let first_id = focus_request_id(&first);
+        lane.dispatch(&mut state, first.actions);
+        let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+        lane.dispatch(&mut state, crossing.actions);
+        let create = kind.issue_unfocused(&mut state);
+        let create_id = create_request_id(&create);
+        lane.dispatch(&mut state, create.actions);
+        assert!(state.pending_manual_focuses.is_empty());
+        let (focuses, _) = lane.complete_ok(&mut state, &first_id);
+        assert_eq!(focuses.len(), 1);
+        assert_eq!(focuses[0].1, "pane_3");
+        assert_eq!(
+            lane.in_flight_id(std::slice::from_ref(&create_id)),
+            Some(create_id.clone())
+        );
+        assert!(lane
+            .complete_result(&mut state, &create_id, Ok(kind.result(false)))
+            .0
+            .is_empty());
+        assert_eq!(
+            lane.in_flight_id(std::slice::from_ref(&focuses[0].0)),
+            Some(focuses[0].0.clone())
+        );
+        apply_hover_focus_frame(&mut state, "pane_3", 3);
+        assert!(lane.complete_ok(&mut state, &focuses[0].0).0.is_empty());
+        assert!(state.pending_manual_focuses.is_empty());
+    }
+}
+
+#[test]
+fn hover_rejected_creates_discard_old_intent_without_sticky_focus() {
+    for kind in [HoverCreateKind::Tab, HoverCreateKind::Workspace] {
+        let mut state = hover_enabled_three_pane_state(false);
+        let pane_2 = state.hits.panes[1].clone();
+        let pane_3 = state.hits.panes[2].clone();
+        let mut lane = SerializedEndpointLane::new();
+        let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+        let first_id = focus_request_id(&first);
+        lane.dispatch(&mut state, first.actions);
+        let crossing = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+        lane.dispatch(&mut state, crossing.actions);
+        let create = kind.issue(&mut state);
+        let create_id = create_request_id(&create);
+        lane.dispatch(&mut state, create.actions);
+        apply_hover_focus_frame(&mut state, "pane_2", 2);
+        assert!(lane.complete_ok(&mut state, &first_id).0.is_empty());
+        assert!(lane
+            .complete_result(
+                &mut state,
+                &create_id,
+                Err(crate::api::schema::ErrorBody {
+                    code: "stale_target".into(),
+                    message: "create rejected".into(),
+                })
+            )
+            .0
+            .is_empty());
+        assert!(state.pending_manual_focuses.is_empty());
+        assert!(state.hover_pane_focus.is_none());
+        let same = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+        assert!(
+            same.actions.is_empty(),
+            "rejection must not leave unknown future focus"
+        );
+        let fresh = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)]);
+        assert_eq!(pane_focus_actions(&fresh.actions)[0].1, "pane_3");
+    }
+}
+
+#[test]
+fn hover_fresh_intent_after_create_keeps_serialized_order() {
+    for kind in [HoverCreateKind::Tab, HoverCreateKind::Workspace] {
+        for result_first in [false, true] {
+            let mut state = hover_enabled_three_pane_state(false);
+            let pane_2 = state.hits.panes[1].clone();
+            let mut lane = SerializedEndpointLane::new();
+            let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+            let first_id = focus_request_id(&first);
+            lane.dispatch(&mut state, first.actions);
+            let create = kind.issue(&mut state);
+            let create_id = create_request_id(&create);
+            lane.dispatch(&mut state, create.actions);
+            apply_hover_focus_frame(&mut state, "pane_2", 2);
+            assert!(lane.complete_ok(&mut state, &first_id).0.is_empty());
+            if result_first {
+                assert!(lane
+                    .complete_result(&mut state, &create_id, Ok(kind.result(true)))
+                    .0
+                    .is_empty());
+            }
+            // Fresh B is newer than create despite B still being snapshot-focused.
+            let fresh = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+            let fresh_id = focus_request_id(&fresh);
+            lane.dispatch(&mut state, fresh.actions);
+            if !result_first {
+                assert_eq!(
+                    lane.in_flight_id(&[create_id.clone(), fresh_id.clone()]),
+                    Some(create_id.clone())
+                );
+                assert!(lane
+                    .complete_result(&mut state, &create_id, Ok(kind.result(true)))
+                    .0
+                    .is_empty());
+            }
+            assert_eq!(
+                lane.in_flight_id(std::slice::from_ref(&fresh_id)),
+                Some(fresh_id.clone())
+            );
+            // The transport has already sent this newer request; context cleanup
+            // must not cancel it, and the final authoritative frame wins.
+            kind.apply_created_context(&mut state);
+            assert!(lane.complete_ok(&mut state, &fresh_id).0.is_empty());
+            apply_hover_focus_frame(&mut state, "pane_2", 6);
+            assert!(state.pending_manual_focuses.is_empty());
+            assert!(state.hover_slot.is_none());
+            assert_eq!(state.focused_pane_id().as_deref(), Some("pane_2"));
+        }
+    }
 }
 
 #[test]
@@ -1219,10 +1806,12 @@ fn hundreds_of_hover_crossings_coalesce_on_the_serialized_endpoint_lane() {
             .collect::<Vec<_>>(),
         vec!["workspace.focus"]
     );
-    known_ids.extend(manual.actions.iter().filter_map(|action| match action {
-        ClientShellAction::Endpoint { request, .. } => Some(request.id.clone()),
-        _ => None,
-    }));
+    let [ClientShellAction::Endpoint { request, .. }] = &manual.actions[..] else {
+        panic!("expected manual workspace request");
+    };
+    let workspace_id = request.id.clone();
+    let hover_id = known_ids[0].clone();
+    known_ids.push(workspace_id.clone());
     lane.dispatch(&mut state, manual.actions);
 
     let executed = drain_serialized_lane(&mut lane, &mut state, &mut known_ids, &mut focus_targets);
@@ -1231,12 +1820,14 @@ fn hundreds_of_hover_crossings_coalesce_on_the_serialized_endpoint_lane() {
         "serialized hover history must not replay, executed {} commands",
         executed.len()
     );
-    assert!(
-        executed.iter().any(
-            |id| focus_targets.get(id).map(String::as_str) == Some("pane_3")
-                || known_ids.contains(id)
-        ),
-        "latest hover intent pane_3 and the manual workspace action must remain reachable"
+    assert_eq!(
+        focus_targets.get(&hover_id).map(String::as_str),
+        Some("pane_2")
+    );
+    assert_eq!(
+        executed,
+        vec![hover_id, workspace_id],
+        "the sent hover must finish before the manual workspace action; older coalesced C must not replay"
     );
     assert!(state.visible_endpoint_notice.is_none());
 }
