@@ -204,8 +204,55 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "peel"):
                 release.verify_upstream(base)
 
+    def test_check_available_uses_reads_not_optional_permission_flags(self):
+        for fields in ({"permissions": {"pull": True}}, {}, {"permissions": {}},
+                       {"permissions": {"pull": False}}):
+            with self.subTest(fields=fields), patch.object(
+                    release, "api", side_effect=[dict(full_name=release.REPOSITORY, **fields), None, []]) as api:
+                release.check_available("candidate")
+                self.assertEqual(api.call_args_list, [
+                    unittest.mock.call("/repos/codefriendly/herdr"),
+                    unittest.mock.call("/repos/codefriendly/herdr/git/ref/tags/candidate", missing=True),
+                    unittest.mock.call("/repos/codefriendly/herdr/releases?per_page=100&page=1"),
+                ])
+
+    def test_check_available_accepts_only_case_variations_of_fixed_repository(self):
+        for name in ("Codefriendly/Herdr", "CODEFRIENDLY/HERDR"):
+            with self.subTest(name=name), patch.object(release, "api", side_effect=[
+                    {"full_name": name, "permissions": {"pull": True}}, None, []]):
+                release.check_available("candidate")
+        for name in (release.UPSTREAM, "codefriendly/other", "other/herdr", "codefriendly/herdr-old",
+                     " codefriendly/herdr", "codefriendly/herdr/", "codefriendly/heKdr"):
+            with self.subTest(name=name), patch.object(release, "api", return_value={
+                    "full_name": name, "permissions": {"pull": True}}) as api:
+                with self.assertRaisesRegex(ValueError, "Fork repository identity mismatch"):
+                    release.check_available("candidate")
+                self.assertEqual(api.call_count, 1)
+
+    def test_check_available_rejects_malformed_repository_before_collision_reads(self):
+        for repo in (None, [], "codefriendly/herdr", {}, {"full_name": None}, {"full_name": 123}):
+            with self.subTest(repo=repo), patch.object(release, "api", return_value=repo) as api:
+                with self.assertRaisesRegex(ValueError, "Invalid fork repository response"):
+                    release.check_available("candidate")
+                self.assertEqual(api.call_count, 1)
+
+    def test_check_available_http_failures_never_mean_available(self):
+        repo = b'{"full_name":"codefriendly/herdr"}'
+        # Metadata and release listings must succeed. Only the tag GET can be absent.
+        for step in range(3):
+            statuses = (401, 403, 429, 500, 503) if step == 1 else (401, 403, 404, 429, 500, 503)
+            for status in statuses:
+                error = urllib.error.HTTPError("https://api.github.com/test", status, "failure", {}, io.BytesIO())
+                tag_missing = urllib.error.HTTPError("https://api.github.com/test", 404, "missing", {}, io.BytesIO())
+                responses = [io.BytesIO(repo), tag_missing][:step] + [error]
+                with self.subTest(step=step, status=status), patch.object(
+                        release.urllib.request, "urlopen", side_effect=responses) as urlopen:
+                    with self.assertRaisesRegex(ValueError, f"HTTP {status}"):
+                        release.check_available("candidate")
+                    self.assertEqual(urlopen.call_count, step + 1)
+
     def test_collisions_include_tags_drafts_and_pagination(self):
-        repo = {"full_name": release.REPOSITORY, "permissions": {"pull": True}}
+        repo = {"full_name": release.REPOSITORY}
         with patch.object(release, "api", side_effect=[repo, None, []]):
             release.check_available("candidate")
         for responses in ([repo, {"object": {}}], [repo, None, [{"tag_name": "candidate", "draft": True}]],
@@ -218,7 +265,7 @@ class ReleaseTests(unittest.TestCase):
                 release.check_available("candidate")
 
     def test_api_only_accepts_explicit_get_404_as_absence(self):
-        for status in (401, 403, 404, 429, 500):
+        for status in (401, 403, 404, 429, 500, 503):
             error = urllib.error.HTTPError("https://api.github.com/test", status, "failure", {}, io.BytesIO())
             with patch.object(release.urllib.request, "urlopen", side_effect=error):
                 if status == 404:
@@ -255,6 +302,29 @@ class ReleaseTests(unittest.TestCase):
             (Path("artifacts") / "unexpected").write_text("no")
             with self.assertRaises(ValueError):
                 release.prepare_assets()
+
+    def test_publication_preflight_failure_never_writes(self):
+        base, archive, tag = release.metadata()
+        repo = {"full_name": release.REPOSITORY}
+        failures = (
+            [{"full_name": release.UPSTREAM}],
+            [{}],
+            [ValueError("HTTP 401")],
+            [repo, ValueError("HTTP 403")],
+            [repo, {"object": {}}],
+            [repo, None, ValueError("HTTP 503")],
+            [repo, None, {"message": "not a listing"}],
+            [repo, None, [{"tag_name": tag, "draft": True}]],
+            [repo, None, [{"tag_name": "other"}] * 100, [{"tag_name": tag, "draft": True}]],
+        )
+        for responses in failures:
+            with self.subTest(responses=responses), patch.dict(os.environ, {
+                    "RESOLVED_SHA": self.source, "RESOLVED_TAG": tag}), \
+                    patch.object(release, "prepare_assets"), patch.object(release, "verify_upstream"), \
+                    patch.object(release, "api", side_effect=responses) as api:
+                with self.assertRaises(ValueError):
+                    release.publish(base, archive, tag, "f" * 40)
+                self.assertTrue(all(call.kwargs.get("method", "GET") == "GET" for call in api.call_args_list))
 
     def test_publication_reserves_tag_then_creates_own_draft_without_overwrite(self):
         base, archive, tag = release.metadata()

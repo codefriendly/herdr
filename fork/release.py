@@ -94,9 +94,13 @@ def metadata():
 
 
 def check_available(tag):
-    # Authenticate/read the repository first: an inaccessible repo must not look absent.
+    # Require a successful metadata read and the fixed fork identity, not optional
+    # user-token permissions flags. GitHub owner/repository names are case-insensitive.
     repo = api(f"/repos/{REPOSITORY}")
-    require(repo["full_name"] == REPOSITORY and repo["permissions"]["pull"] is True, "Cannot read fork")
+    require(isinstance(repo, dict) and isinstance(repo.get("full_name"), str), "Invalid fork repository response")
+    name = repo["full_name"]
+    require(name.isascii() and name.lower() == REPOSITORY,
+            f"Fork repository identity mismatch: expected {REPOSITORY}, got {name!r}")
     require(api(f"/repos/{REPOSITORY}/git/ref/tags/{tag}", missing=True) is None, "Release tag already exists")
     # Include drafts, which the release-by-tag endpoint may not return.
     page = 1
