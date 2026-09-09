@@ -7,7 +7,7 @@ subject to upstream's contributor policy.
 
 ## Status
 
-The local stable-tag migration is partially implemented, not yet published.
+The stable-tag migration is committed and published to the personal fork.
 Fork `master` has been rebased onto selected upstream stable `v0.9.0`
 (`b99002ac99b09e00b4ca692436cb15a6b0d676f1`), with fork CI commits `2ac91ce9`
 and `2737bb07`. The feature branch is separately ported to the same base at
@@ -22,16 +22,42 @@ it did not apply cleanly to `v0.9.0` after upstream's input/runtime reorganizati
 The final simplified source passed local full checks (3312 passed, 3 skipped),
 benchmarks, and independent review. The last release-binary/manual smoke test
 covered the previous `1e627856` source, **not** the final `7a702319` source.
-Remote all-platform CI has not run.
+The final source subsequently passed all five hosted optimized release builds;
+that is build evidence, not a replacement for a manual smoke test of that source.
+Normal CI on fork maintenance commit `bd39ddcd` also passed; it tested fork
+`master`, not the feature source.
 
-The workflow changes described below, fork documentation/exports, and AGENTS fork
-appendix are still uncommitted local work. Local `master` now tracks
-`origin/master`, and `pane-hover-focus` tracks `origin/pane-hover-focus`.
-The remote branches still contain the old history: do not pull or merge them
-into the migrated branches before separately authorized migration pushes.
-No migration pushes, workflow dispatch, or personal release publication have
-happened. Always verify upstream releases when selecting a future base; the
-release workflow checks the explicitly recorded tag, never follows `latest` or
+Local `master` tracks `origin/master`, and `pane-hover-focus` tracks
+`origin/pane-hover-focus`; both stable-based branches have been pushed. The fork
+workflow, documentation/exports, and AGENTS fork appendix are committed.
+
+Published release:
+
+- [Codefriendly Herdr v0.9.0 — revision 1](https://github.com/codefriendly/herdr/releases/tag/codefriendly-v0.9.0-r1)
+  is published as latest and non-prerelease.
+- Source/tag commit: `7a7023194477e003adbb7d8dc1a0b86095104257`.
+- Maintenance/workflow commit: `9a4ce950`.
+- [Successful release run](https://github.com/codefriendly/herdr/actions/runs/34386141152):
+  resolve, all five platform builds, and publication passed.
+- All five published assets were downloaded and passed `SHA256SUMS` verification.
+  The Windows ZIP passed its integrity check and includes the app-local ConPTY
+  runtime. Verification did not install or execute these downloaded binaries.
+
+Earlier preflight failures were addressed by canonical upstream tag fetching and
+repository identity/read-access checks without optional permission-field gates.
+Both Linux builders then encountered a Google Chrome apt-index hash mismatch;
+the workflow now excludes that unused repository before updating apt, leaving
+preinstalled Chrome untouched. These fixes are included in the successful run.
+
+Deferred maintenance: the pinned cache and Zig actions emit Node deprecation
+warnings, including Node-20 actions forced onto Node 24. At the release audit,
+`actions/cache` v6.1.0 and `Swatinem/rust-cache` v2.9.2 declared native Node 24;
+latest `mlugg/setup-zig` v2.2.1 still declared Node 20. Review compatible pinned
+upgrades separately; do not simply remove the Node 24 override. These warnings
+did not block publication.
+
+Always verify upstream releases when selecting a future base; the release
+workflow checks the explicitly recorded tag, never follows `latest` or
 `upstream/master`.
 
 ## Remotes and branch roles
@@ -64,7 +90,7 @@ identifies a commit just like a branch: conflicts use normal Git resolution,
 followed by `git add` and `git rebase --continue`. Fetching `upstream/master`
 keeps it available for inspection without using it as the personal build base.
 
-## Fork master layout (pending commit)
+## Fork master layout
 
 ```text
 fork/
@@ -151,7 +177,9 @@ After separately authorizing and completing commits/pushes, dispatch
 - `source_sha`: the full lowercase source commit in the archived metadata
   (currently `7a7023194477e003adbb7d8dc1a0b86095104257`), not a branch/tag.
 - `revision`: a previously unused positive integer without leading zeros;
-  defaults to `1` for `codefriendly-v0.9.0-r1` with the current recorded base.
+  the workflow input defaults to `1`, but that revision is already published for
+  the current base. The next release on `v0.9.0` must use an unused revision
+  (currently `2`), not the default.
 
 The workflow reads metadata and `fork/release.py` from the immutable dispatched
 maintenance/workflow commit. It checks the upstream GitHub Release is published
