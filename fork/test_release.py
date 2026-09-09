@@ -1,8 +1,10 @@
 """Offline release guard tests; no GitHub calls or publication."""
 
+from contextlib import contextmanager
 import io
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -11,6 +13,118 @@ import urllib.error
 import release
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@contextmanager
+def route_upstream(upstream):
+    git = release.git
+
+    def local_git(*args, **kwargs):
+        if args[0] == "fetch":
+            # Exercise real Git while refusing any network or broader tag fetch.
+            if args != ("fetch", "--no-tags", "https://github.com/herdrdev/herdr.git", "refs/tags/v0.9.0"):
+                raise AssertionError(f"Unexpected fetch: {args}")
+            args = ("fetch", "--no-tags", str(upstream), args[-1])
+        return git(*args, **kwargs)
+
+    with patch.object(release, "git", side_effect=local_git), \
+            patch.dict(os.environ, GIT_ALLOW_PROTOCOL="file"):
+        yield
+
+
+@contextmanager
+def recorded_upstream(base):
+    with tempfile.TemporaryDirectory() as temp:
+        upstream = Path(temp) / "upstream.git"
+        release.git("init", "--bare", str(upstream))
+        release.git("-C", str(upstream), "fetch", "--no-tags", str(ROOT),
+                    f"{base['commit']}:refs/tags/{base['tag']}")
+        checkout = Path(temp) / "checkout"
+        release.git("clone", "--shared", "--no-checkout", "--no-tags", str(ROOT), str(checkout))
+        shutil.copytree(ROOT / "fork/patches", checkout / "fork/patches")
+        cwd = Path.cwd()
+        try:
+            os.chdir(checkout)
+            with route_upstream(upstream):
+                yield
+        finally:
+            os.chdir(cwd)
+
+
+class VerifySourceTests(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.cwd = Path.cwd()
+        self.addCleanup(os.chdir, self.cwd)
+        self.enterContext(patch.dict(os.environ, {
+            "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_ALLOW_PROTOCOL": "file",
+            "GIT_AUTHOR_NAME": "Offline Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Offline Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        }))
+        self.upstream = Path(temp.name) / "upstream"
+        release.git("init", str(self.upstream))
+        os.chdir(self.upstream)
+        Path("Cargo.toml").write_text('[package]\nname = "herdr"\nversion = "0.9.0"\n')
+        release.git("add", "Cargo.toml")
+        release.git("commit", "-m", "stable base")
+        self.base = {"tag": "v0.9.0", "commit": release.git("rev-parse", "HEAD")}
+        Path("feature.txt").write_text("feature\n")
+        release.git("add", "feature.txt")
+        release.git("commit", "-m", "feature source")
+        self.archive = {
+            "source_commit": release.git("rev-parse", "HEAD"),
+            "source_tree": release.git("rev-parse", "HEAD^{tree}"),
+            "patches": ["0001-feature.patch"],
+        }
+        checkout = Path(temp.name) / "checkout"
+        release.git("clone", "--no-tags", str(self.upstream), str(checkout))
+        os.chdir(checkout)
+        patch_dir = Path("fork/patches/pane-hover-focus")
+        patch_dir.mkdir(parents=True)
+        (patch_dir / "0001-feature.patch").write_text(
+            release.git("diff", self.base["commit"], self.archive["source_commit"]) + "\n")
+        self.assertEqual(release.git("tag", "--list"), "")
+        self.enterContext(route_upstream(self.upstream))
+
+    def tag_upstream(self, *, annotated=False, commit=None):
+        args = ("-a", "-m", "stable release") if annotated else ()
+        release.git("-C", str(self.upstream), "tag", *args, self.base["tag"], commit or self.base["commit"])
+
+    def test_verify_source_fetches_missing_lightweight_upstream_tag(self):
+        self.tag_upstream()
+        release.git("-C", str(self.upstream), "tag", "unrelated", self.archive["source_commit"])
+        release.verify_source(self.base, self.archive)
+        self.assertEqual(release.git("rev-parse", "FETCH_HEAD^{commit}"), self.base["commit"])
+        self.assertEqual(release.git("tag", "--list"), "")
+
+    def test_verify_source_fetches_missing_annotated_upstream_tag(self):
+        self.tag_upstream(annotated=True)
+        release.verify_source(self.base, self.archive)
+        self.assertEqual(release.git("cat-file", "-t", "FETCH_HEAD"), "tag")
+        self.assertEqual(release.git("rev-parse", "FETCH_HEAD^{commit}"), self.base["commit"])
+        self.assertEqual(release.git("tag", "--list"), "")
+
+    def test_verify_source_ignores_and_preserves_wrong_local_tag(self):
+        self.tag_upstream()
+        release.git("tag", self.base["tag"], self.archive["source_commit"])
+        release.verify_source(self.base, self.archive)
+        self.assertEqual(release.git("rev-parse", f"refs/tags/{self.base['tag']}"), self.archive["source_commit"])
+
+    def test_verify_source_rejects_fetched_mismatch_despite_correct_local_tag(self):
+        self.tag_upstream(commit=self.archive["source_commit"])
+        release.git("tag", self.base["tag"], self.base["commit"])
+        with self.assertRaisesRegex(ValueError, "stable tag mismatch"):
+            release.verify_source(self.base, self.archive)
+        self.assertEqual(release.git("rev-parse", f"refs/tags/{self.base['tag']}"), self.base["commit"])
+
+    def test_verify_source_fetch_failure_does_not_use_local_tag_or_stale_fetch_head(self):
+        release.git("tag", self.base["tag"], self.base["commit"])
+        Path(".git/FETCH_HEAD").write_text(f"{self.base['commit']}\t\tstale tag\n")
+        # The upstream repository is reachable, but lacks the requested tag.
+        with self.assertRaises(release.subprocess.CalledProcessError):
+            release.verify_source(self.base, self.archive)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -57,18 +171,20 @@ class ReleaseTests(unittest.TestCase):
 
     def test_recorded_archive_reproduces_source(self):
         base, archive, _ = release.metadata()
-        release.verify_source(base, archive)
-        with patch.object(release, "git", wraps=release.git) as git:
-            archive = dict(archive, source_tree="a" * 40)
-            with self.assertRaisesRegex(ValueError, "Source tree mismatch"):
-                release.verify_source(base, archive)
-            self.assertFalse(any(call.args[0] == "read-tree" for call in git.call_args_list))
+        with recorded_upstream(base):
+            release.verify_source(base, archive)
+            with patch.object(release, "git", wraps=release.git) as git:
+                archive = dict(archive, source_tree="a" * 40)
+                with self.assertRaisesRegex(ValueError, "Source tree mismatch"):
+                    release.verify_source(base, archive)
+                self.assertFalse(any(call.args[0] == "read-tree" for call in git.call_args_list))
 
     def test_reordered_archive_fails(self):
         base, archive, _ = release.metadata()
         archive = dict(archive, patches=list(reversed(archive["patches"])))
-        with self.assertRaises((ValueError, release.subprocess.CalledProcessError)):
-            release.verify_source(base, archive)
+        with recorded_upstream(base):
+            with self.assertRaises((ValueError, release.subprocess.CalledProcessError)):
+                release.verify_source(base, archive)
 
     def test_upstream_published_stable_and_peeled_tag(self):
         base, _, _ = release.metadata()
