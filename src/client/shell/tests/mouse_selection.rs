@@ -282,7 +282,7 @@ fn hover_profile_batch(
             assert_eq!(state.hover_slot.as_ref().unwrap().request_id, *request_id);
             if completed == 0 {
                 assert_eq!(pane_id, "pane_16");
-                assert_eq!(state.hover_pane_focus.as_ref().unwrap().pane_id, "pane_14");
+                assert_eq!(state.desired_hover_pane_id.as_deref().unwrap(), "pane_14");
                 let mut follow_up = ClientShellInput::default();
                 state.flush_coalesced_hover_pane_focus(&mut follow_up);
                 assert!(
@@ -339,7 +339,7 @@ fn hover_profile_batch(
         reply_mode.label()
     );
     assert!(
-        state.hover_pane_focus.is_none(),
+        state.desired_hover_pane_id.is_none(),
         "hover profile panes={pane_count} hover={hover_enabled} reply={}",
         reply_mode.label()
     );
@@ -550,7 +550,7 @@ fn hover_repeated_motion_and_slot_flush_retain_desired_id_allocation() {
     // first request owns the slot. Comparing live storage needs no allocator hook.
     for pane in [&pane_2, &pane_3] {
         let _ = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, pane)]);
-        let allocation = state.hover_pane_focus.as_ref().unwrap().pane_id.as_ptr();
+        let allocation = state.desired_hover_pane_id.as_ref().unwrap().as_ptr();
         for _ in 0..8 {
             let input = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, pane)]);
             assert!(input.actions.is_empty());
@@ -560,7 +560,7 @@ fn hover_repeated_motion_and_slot_flush_retain_desired_id_allocation() {
             assert!(follow_up.actions.is_empty());
             assert!(!follow_up.repaint);
             assert_eq!(
-                state.hover_pane_focus.as_ref().unwrap().pane_id.as_ptr(),
+                state.desired_hover_pane_id.as_ref().unwrap().as_ptr(),
                 allocation
             );
             assert_eq!(state.hover_slot.as_ref().unwrap().request_id, request_id);
@@ -571,12 +571,7 @@ fn hover_repeated_motion_and_slot_flush_retain_desired_id_allocation() {
 
 #[test]
 fn hover_motion_coalesces_while_focus_is_in_flight_and_forwards_reported_motion() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(three_pane_snapshot()));
-    state.set_pane_surface(three_pane_surface(true));
-    state.compose(106, 20).expect("three-pane frame");
+    let mut state = hover_enabled_three_pane_state(true);
     let pane_2 = state.hits.panes[1].clone();
     let pane_3 = state.hits.panes[2].clone();
 
@@ -646,15 +641,7 @@ fn hover_motion_is_disabled_without_local_mouse_capture_or_hover_preference() {
 
 #[test]
 fn hover_motion_does_not_retarget_selection_or_pane_mouse_gestures() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-
-    let mut selection_state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    selection_state.set_snapshot(Box::new(three_pane_snapshot()));
-    selection_state.set_pane_surface(three_pane_surface(false));
-    selection_state
-        .compose(106, 20)
-        .expect("selection three-pane frame");
+    let mut selection_state = hover_enabled_three_pane_state(false);
     let pane_1 = selection_state.hits.panes[0].clone();
     let pane_2 = selection_state.hits.panes[1].clone();
     selection_state.handle_raw_events(vec![hover_mouse(
@@ -665,12 +652,7 @@ fn hover_motion_does_not_retarget_selection_or_pane_mouse_gestures() {
         selection_state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
     assert!(selection_move.actions.is_empty());
 
-    let mut gesture_state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    gesture_state.set_snapshot(Box::new(three_pane_snapshot()));
-    gesture_state.set_pane_surface(three_pane_surface(true));
-    gesture_state
-        .compose(106, 20)
-        .expect("gesture three-pane frame");
+    let mut gesture_state = hover_enabled_three_pane_state(true);
     let pane_1 = gesture_state.hits.panes[0].clone();
     let pane_2 = gesture_state.hits.panes[1].clone();
     gesture_state.handle_raw_events(vec![hover_mouse(
@@ -715,7 +697,7 @@ fn hover_focus_live_config_reconciles_enablement_transitions() {
                 "{transition}"
             );
             assert_eq!(
-                state.hover_pane_focus.is_some(),
+                state.desired_hover_pane_id.is_some(),
                 was_enabled && is_enabled,
                 "{transition}"
             );
@@ -743,12 +725,7 @@ fn hover_focus_live_config_reconciles_enablement_transitions() {
 
 #[test]
 fn hover_focus_retargets_the_snapshot_focused_pane_after_newer_hover_intent() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(three_pane_snapshot()));
-    state.set_pane_surface(three_pane_surface(false));
-    state.compose(106, 20).expect("three-pane frame");
+    let mut state = hover_enabled_three_pane_state(false);
     let pane_1 = state.hits.panes[0].clone();
     let pane_2 = state.hits.panes[1].clone();
 
@@ -759,23 +736,12 @@ fn hover_focus_retargets_the_snapshot_focused_pane_after_newer_hover_intent() {
         hover_a.actions.is_empty(),
         "unacknowledged hover A must wait for the occupied hover slot"
     );
-    assert_eq!(
-        state
-            .hover_pane_focus
-            .as_ref()
-            .map(|hover| hover.pane_id.as_str()),
-        Some("pane_1")
-    );
+    assert_eq!(state.desired_hover_pane_id.as_deref(), Some("pane_1"));
 }
 
 #[test]
 fn hover_focus_result_and_snapshot_order_preserve_latest_intent() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(three_pane_snapshot()));
-    state.set_pane_surface(three_pane_surface(false));
-    state.compose(106, 20).expect("three-pane frame");
+    let mut state = hover_enabled_three_pane_state(false);
     let pane_2 = state.hits.panes[1].clone();
     let pane_3 = state.hits.panes[2].clone();
 
@@ -796,13 +762,7 @@ fn hover_focus_result_and_snapshot_order_preserve_latest_intent() {
         .into_iter()
         .find_map(|(id, pane_id)| (pane_id == "pane_3").then_some(id))
         .expect("changed hover target should emit after the rejected slot");
-    assert_eq!(
-        state
-            .hover_pane_focus
-            .as_ref()
-            .map(|hover| hover.pane_id.as_str()),
-        Some("pane_3")
-    );
+    assert_eq!(state.desired_hover_pane_id.as_deref(), Some("pane_3"));
     assert!(state
         .handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_3)])
         .actions
@@ -813,36 +773,19 @@ fn hover_focus_result_and_snapshot_order_preserve_latest_intent() {
         &pane_3_request_id,
         Ok(crate::api::schema::ResponseResult::Ok {}),
     );
-    assert_eq!(
-        state
-            .hover_pane_focus
-            .as_ref()
-            .map(|hover| hover.pane_id.as_str()),
-        Some("pane_3")
-    );
+    assert_eq!(state.desired_hover_pane_id.as_deref(), Some("pane_3"));
     let mut stale_snapshot = snapshot_focused("pane_2", 2);
     stale_snapshot.focused_pane_id = Some("pane_2".into());
     state.set_snapshot(Box::new(stale_snapshot));
-    assert_eq!(
-        state
-            .hover_pane_focus
-            .as_ref()
-            .map(|hover| hover.pane_id.as_str()),
-        Some("pane_3")
-    );
+    assert_eq!(state.desired_hover_pane_id.as_deref(), Some("pane_3"));
 
     state.set_snapshot(Box::new(snapshot_focused("pane_3", 3)));
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
 }
 
 #[test]
 fn hover_focus_success_waits_for_snapshot_before_repeating_same_target() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(three_pane_snapshot()));
-    state.set_pane_surface(three_pane_surface(false));
-    state.compose(106, 20).expect("three-pane frame");
+    let mut state = hover_enabled_three_pane_state(false);
     let pane_2 = state.hits.panes[1].clone();
 
     let request = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
@@ -854,20 +797,15 @@ fn hover_focus_success_waits_for_snapshot_before_repeating_same_target() {
     );
     let repeated = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
     assert!(repeated.actions.is_empty());
-    assert!(state.hover_pane_focus.is_some());
+    assert!(state.desired_hover_pane_id.is_some());
 
     state.set_snapshot(Box::new(snapshot_focused("pane_2", 2)));
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
 }
 
 #[test]
 fn rejected_hover_focus_can_retry_without_an_endpoint_notice() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(three_pane_snapshot()));
-    state.set_pane_surface(three_pane_surface(false));
-    state.compose(106, 20).expect("three-pane frame");
+    let mut state = hover_enabled_three_pane_state(false);
     let pane_2 = state.hits.panes[1].clone();
 
     let first = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
@@ -893,41 +831,28 @@ fn rejected_hover_focus_can_retry_without_an_endpoint_notice() {
 
 #[test]
 fn hover_focus_cleanup_handles_snapshot_removal_and_endpoint_reset() {
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut reset_state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    reset_state.set_snapshot(Box::new(three_pane_snapshot()));
-    reset_state.set_pane_surface(three_pane_surface(false));
-    reset_state.compose(106, 20).expect("three-pane frame");
+    let mut reset_state = hover_enabled_three_pane_state(false);
     let pane_2 = reset_state.hits.panes[1].clone();
     reset_state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
-    assert!(reset_state.hover_pane_focus.is_some());
+    assert!(reset_state.desired_hover_pane_id.is_some());
     reset_state.reset_endpoint_projection();
-    assert!(reset_state.hover_pane_focus.is_none());
+    assert!(reset_state.desired_hover_pane_id.is_none());
 
-    let mut removal_state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    removal_state.set_snapshot(Box::new(three_pane_snapshot()));
-    removal_state.set_pane_surface(three_pane_surface(false));
-    removal_state.compose(106, 20).expect("three-pane frame");
+    let mut removal_state = hover_enabled_three_pane_state(false);
     let pane_2 = removal_state.hits.panes[1].clone();
     removal_state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
-    assert!(removal_state.hover_pane_focus.is_some());
+    assert!(removal_state.desired_hover_pane_id.is_some());
     let mut removed = snapshot_focused("pane_1", 2);
     removed.panes.retain(|pane| pane.pane_id != "pane_2");
     removal_state.set_snapshot(Box::new(removed));
-    assert!(removal_state.hover_pane_focus.is_none());
+    assert!(removal_state.desired_hover_pane_id.is_none());
 }
 
 #[test]
 fn hover_focus_preflight_failures_are_quiet() {
     use crate::client::endpoint::ClientEndpointStatus;
 
-    let mut config = Config::default();
-    config.ui.focus_pane_on_hover = true;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-    state.set_snapshot(Box::new(three_pane_snapshot()));
-    state.set_pane_surface(three_pane_surface(false));
-    state.compose(106, 20).expect("three-pane frame");
+    let mut state = hover_enabled_three_pane_state(false);
     let pane_2 = state.hits.panes[1].clone();
     let endpoint_id = state.active_endpoint_id.clone();
 
@@ -1215,7 +1140,7 @@ fn assert_guard_discards_coalesced_hover(action: crate::input::KeybindAction) {
             "{action:?} must discard deferred hover, exit_before_reply={exit_before_reply}"
         );
         assert!(ids.is_empty());
-        assert!(state.hover_pane_focus.is_none());
+        assert!(state.desired_hover_pane_id.is_none());
         if !exit_before_reply {
             let exit = state.handle_raw_events(vec![RawInputEvent::Key(
                 crate::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -1279,7 +1204,7 @@ fn hover_focused_split_supersedes_older_coalesced_intent_on_serialized_lane() {
         focuses.is_empty(),
         "newer explicit split must supersede coalesced C"
     );
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
     assert_eq!(
         state.pending_manual_focuses.back().unwrap().request_id,
         split_id
@@ -1498,7 +1423,7 @@ fn assert_hover_focused_create_supersedes_coalesced(kind: HoverCreateKind) {
             "{kind:?}: old coalesced C must not follow create"
         );
         assert!(ids.is_empty());
-        assert!(state.hover_pane_focus.is_none());
+        assert!(state.desired_hover_pane_id.is_none());
         assert_eq!(
             lane.in_flight_id(std::slice::from_ref(&create_id)),
             Some(create_id.clone())
@@ -1616,7 +1541,7 @@ fn hover_rejected_creates_discard_old_intent_without_sticky_focus() {
             .0
             .is_empty());
         assert!(state.pending_manual_focuses.is_empty());
-        assert!(state.hover_pane_focus.is_none());
+        assert!(state.desired_hover_pane_id.is_none());
         let same = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
         assert!(
             same.actions.is_empty(),
@@ -1864,7 +1789,7 @@ fn hover_disable_does_not_replay_queued_hover_history() {
 
     let disabled = Config::default();
     state.apply_live_client_config(&disabled, &[], &[]);
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
     assert!(state
         .pending_requests
         .values()
@@ -1926,7 +1851,7 @@ fn unsent_hover_behind_in_flight_manual_is_dropped_on_disable() {
 
     let disabled = Config::default();
     state.apply_live_client_config(&disabled, &[], &[]);
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
 
     let mut focus_targets = std::collections::HashMap::new();
     let executed = drain_serialized_lane(&mut lane, &mut state, &mut known_ids, &mut focus_targets);
@@ -2016,7 +1941,7 @@ fn hover_snapshot_before_result_does_not_wait_for_another_snapshot() {
     state
         .compose(106, 20)
         .expect("acknowledged three-pane frame");
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
     let (_, follow_up) = state.handle_endpoint_result(
         "boot-1",
         &request_id,
@@ -2228,7 +2153,7 @@ fn assert_late_hover_success_after_snapshot_cleanup_stays_quiet(reset: ClientShe
     let focused_pane = state.hits.panes[0].clone();
     assert_eq!(focused_pane.pane_id, "pane_3");
     assert_eq!(state.focused_pane_id().as_deref(), Some("pane_3"));
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
     assert!(state.hover_awaiting_snapshot.is_none());
     assert!(!state.pending_requests.contains_key(&first_id));
     lane.dispatch(&mut state, Vec::new());
@@ -2256,7 +2181,7 @@ fn assert_late_hover_success_after_snapshot_cleanup_stays_quiet(reset: ClientShe
     );
     lane.dispatch(&mut state, stay.actions);
     assert!(state.hover_awaiting_snapshot.is_none());
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
     assert!(state.hover_slot.is_none());
     assert!(state.pending_requests.is_empty());
 }
@@ -2344,7 +2269,7 @@ fn hover_matching_snapshot_does_not_erase_intent_after_interposed_manual_focus()
         let (extra, _) = lane.complete_ok(&mut state, &follow_up[0].0);
         assert!(extra.is_empty());
         state.set_snapshot(Box::new(snapshot_focused("pane_2", 3)));
-        assert!(state.hover_pane_focus.is_none());
+        assert!(state.desired_hover_pane_id.is_none());
         assert!(state.hover_slot.is_none());
     }
 }
@@ -2462,7 +2387,7 @@ fn workspace_reset_does_not_replay_queued_hover_history() {
     let mut reset = snapshot_focused("pane_1", 2);
     reset.focused_workspace_id = Some("ws_other".into());
     state.set_snapshot(Box::new(reset));
-    assert!(state.hover_pane_focus.is_none());
+    assert!(state.desired_hover_pane_id.is_none());
     assert!(state
         .pending_requests
         .values()
@@ -2511,40 +2436,15 @@ fn hover_same_pane_and_stale_results_stay_quiet_and_latest() {
     let Some(first_id) = lane.in_flight_id(&known_ids) else {
         panic!("first hover should occupy the serialized lane");
     };
-    let stale_error = {
-        let response = serde_json::to_vec(&crate::api::schema::ErrorResponse {
-            id: first_id.clone(),
-            error: crate::api::schema::ErrorBody {
-                code: "stale_target".into(),
-                message: "stale".into(),
-            },
-        })
-        .expect("encode stale hover error");
-        let completed = lane
-            .commands
-            .receive_chunk(
-                &crate::client::endpoint::ClientEndpointId::Local,
-                1,
-                "boot-1",
-                &first_id,
-                true,
-                response,
-            )
-            .expect("receive stale hover chunk")
-            .expect("completed stale hover");
-        let (_, actions) = state.handle_endpoint_result(
-            &completed.boot_id,
-            &completed.request_id,
-            completed.result,
-        );
-        known_ids.extend(actions.iter().filter_map(|action| match action {
-            ClientShellAction::Endpoint { request, .. } => Some(request.id.clone()),
-            _ => None,
-        }));
-        lane.dispatch(&mut state, actions);
-        first_id
-    };
-    let _ = stale_error;
+    let (_, request_ids) = lane.complete_result(
+        &mut state,
+        &first_id,
+        Err(crate::api::schema::ErrorBody {
+            code: "stale_target".into(),
+            message: "stale".into(),
+        }),
+    );
+    known_ids.extend(request_ids);
     assert!(state.visible_endpoint_notice.is_none());
 
     state.set_snapshot(Box::new(snapshot_focused("pane_2", 2)));
