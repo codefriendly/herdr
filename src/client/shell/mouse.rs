@@ -2226,7 +2226,7 @@ impl ClientShellState {
 
     fn maybe_focus_hovered_pane(&mut self, pane_index: usize, outcome: &mut ClientShellInput) {
         if !self.hover_pane_focus_is_eligible() {
-            self.hover_pane_focus = None;
+            self.desired_hover_pane_id = None;
             return;
         }
         self.request_hover_pane_focus(pane_index, outcome);

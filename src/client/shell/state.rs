@@ -993,7 +993,7 @@ pub(crate) struct ClientShellState {
     pub(super) popup_pending: bool,
     pub(super) popup_pending_deadline: Option<std::time::Instant>,
     pub(super) next_request_id: u64,
-    pub(super) hover_pane_focus: Option<ClientHoverPaneFocus>,
+    pub(super) desired_hover_pane_id: Option<String>,
     pub(super) hover_slot: Option<ClientHoverSlot>,
     pub(super) hover_awaiting_snapshot: Option<ClientHoverPaneFocus>,
     // Manual and hover requests share issuance order; snapshot focus can lag both.
@@ -1143,7 +1143,7 @@ impl ClientShellState {
             popup_pending: false,
             popup_pending_deadline: None,
             next_request_id: 1,
-            hover_pane_focus: None,
+            desired_hover_pane_id: None,
             hover_slot: None,
             hover_awaiting_snapshot: None,
             next_focus_generation: 1,
