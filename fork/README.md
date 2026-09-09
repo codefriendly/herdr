@@ -155,8 +155,11 @@ After separately authorizing and completing commits/pushes, dispatch
 
 The workflow reads metadata and `fork/release.py` from the immutable dispatched
 maintenance/workflow commit. It checks the upstream GitHub Release is published
-and not draft/prerelease, peels that exact tag to the recorded commit, checks
-stable-base ancestry and source tree/Cargo identity, and applies the ordered
+and not draft/prerelease, peels that exact tag to the recorded commit, then
+fetches only `refs/tags/<recorded-tag>` from canonical `herdrdev/herdr` with
+`--no-tags` and verifies `FETCH_HEAD^{commit}` matches that same base. Fork-local
+tags are neither trusted nor overwritten. It checks stable-base ancestry and
+source tree/Cargo identity, and applies the ordered
 archive to an isolated Git index to prove tree equivalence. Missing API access,
 metadata, source history, or stable-release evidence fails closed. Ancestry or
 patch equivalence alone does not prove behavioral correctness.
