@@ -3,18 +3,18 @@ name: Publish fork build
 on:
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: Branch, tag, or commit to build from this fork
+      source_sha:
+        description: Full 40-character source commit from fork patch metadata (not a branch or tag)
         required: true
-        default: pane-hover-focus
+        type: string
+      revision:
+        description: Unused positive revision for the recorded upstream stable base
+        required: true
+        default: '1'
         type: string
 
 permissions:
   contents: read
-
-concurrency:
-  group: fork-release-${{ inputs.source_ref }}
-  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -22,6 +22,7 @@ env:
 
 jobs:
   resolve:
+    if: github.repository == 'codefriendly/herdr' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     outputs:
       commit: ${{ steps.source.outputs.commit }}
@@ -29,16 +30,18 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Resolve source revision
+      - name: Verify stable base, archived source, and unused release identity
         id: source
-        run: |
-          set -euo pipefail
-          commit=$(git rev-parse HEAD)
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "tag=codefriendly-${commit:0:12}" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REVISION: ${{ inputs.revision }}
+        run: python3 fork/release.py resolve
 
   build:
     needs: resolve
@@ -176,67 +179,29 @@ jobs:
     permissions:
       actions: read
       contents: write
+    concurrency:
+      group: fork-release-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
 
     steps:
+      # Publication code and metadata always come from the dispatched maintenance commit,
+      # never from the feature source or a moving branch.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
 
-      - name: Prepare release assets
+      - name: Create new release and assets (never overwrite)
         env:
-          SOURCE_REF: ${{ inputs.source_ref }}
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
           SOURCE_SHA: ${{ needs.resolve.outputs.commit }}
-        run: |
-          set -euo pipefail
-          mkdir release-assets
-
-          while IFS= read -r -d '' source; do
-            name=$(basename "$source")
-            case "$name" in
-              herdr-linux-*|herdr-macos-*|herdr-windows-*.zip) ;;
-              *) continue ;;
-            esac
-            if [ -e "release-assets/$name" ]; then
-              echo "error: duplicate release asset $name" >&2
-              exit 1
-            fi
-            cp "$source" "release-assets/$name"
-          done < <(find artifacts -type f -print0)
-
-          expected=(
-            herdr-linux-x86_64
-            herdr-linux-aarch64
-            herdr-macos-x86_64
-            herdr-macos-aarch64
-            herdr-windows-x86_64.zip
-          )
-          for asset in "${expected[@]}"; do
-            if [ ! -f "release-assets/$asset" ]; then
-              echo "error: missing release asset $asset" >&2
-              exit 1
-            fi
-          done
-
-          (
-            cd release-assets
-            sha256sum herdr-* > SHA256SUMS
-          )
-
-          cat > RELEASE_NOTES.md <<EOF
-          Manually requested Codefriendly build from \`$SOURCE_REF\` at \`$SOURCE_SHA\`.
-
-          This release uses the same targets, optimization settings, toolchain, packaging, and cache strategy as the upstream stable release build.
-          EOF
-
-      - name: Publish release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
-        with:
-          tag_name: ${{ needs.resolve.outputs.tag }}
-          target_commitish: ${{ needs.resolve.outputs.commit }}
-          name: Codefriendly build ${{ needs.resolve.outputs.tag }}
-          body_path: RELEASE_NOTES.md
-          files: release-assets/*
-          prerelease: false
-          make_latest: true
-          overwrite_files: true
+          RESOLVED_SHA: ${{ needs.resolve.outputs.commit }}
+          RESOLVED_TAG: ${{ needs.resolve.outputs.tag }}
+          REVISION: ${{ inputs.revision }}
+        run: python3 fork/release.py publish
