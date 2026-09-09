@@ -125,7 +125,10 @@ def verify_upstream(base):
 
 def verify_source(base, patch):
     source = patch["source_commit"]
-    require(git("rev-parse", f"{base['tag']}^{{commit}}") == base["commit"], "Local stable tag mismatch")
+    # Fork checkouts need not contain upstream tags. Fetch only the canonical tag
+    # into FETCH_HEAD, leaving any existing local tags untouched and untrusted.
+    git("fetch", "--no-tags", f"https://github.com/{UPSTREAM}.git", f"refs/tags/{base['tag']}")
+    require(git("rev-parse", "FETCH_HEAD^{commit}") == base["commit"], "Fetched upstream stable tag mismatch")
     require(git("rev-parse", f"{source}^{{commit}}") == source, "Source is not a commit")
     for tip in (source, "HEAD"):
         subprocess.run(["git", "merge-base", "--is-ancestor", base["commit"], tip], check=True)
