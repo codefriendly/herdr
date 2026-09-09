@@ -2225,26 +2225,30 @@ impl ClientShellState {
     }
 
     fn maybe_focus_hovered_pane(&mut self, pane_index: usize, outcome: &mut ClientShellInput) {
-        if !self.config.focus_pane_on_hover
-            || !self.config.mouse_capture
-            || self.mode != ClientShellMode::Terminal
-            || self.overlay.is_some()
-            || self.popup_pending
-            || self.popup_terminal_id.is_some()
-            || self.pane_mouse_gesture.is_some()
-            || self.selection.is_some()
-            || self.chrome_drag.is_some()
-            || self.workspace_press.is_some()
-            || self.tab_press.is_some()
-            || self.url_click_consumes_until_up
-            || self.replaying_url_click
-            || self.pending_requests.values().any(|pending| {
-                matches!(&pending.kind, PendingEndpointKind::PaneLinkActivate { .. })
-            })
-        {
+        if !self.hover_pane_focus_is_eligible() {
+            self.hover_pane_focus = None;
             return;
         }
         self.request_hover_pane_focus(pane_index, outcome);
+    }
+
+    pub(super) fn hover_pane_focus_is_eligible(&self) -> bool {
+        self.config.focus_pane_on_hover
+            && self.config.mouse_capture
+            && self.mode == ClientShellMode::Terminal
+            && self.overlay.is_none()
+            && !self.popup_pending
+            && self.popup_terminal_id.is_none()
+            && self.pane_mouse_gesture.is_none()
+            && self.selection.is_none()
+            && self.chrome_drag.is_none()
+            && self.workspace_press.is_none()
+            && self.tab_press.is_none()
+            && !self.url_click_consumes_until_up
+            && !self.replaying_url_click
+            && !self.pending_requests.values().any(|pending| {
+                matches!(&pending.kind, PendingEndpointKind::PaneLinkActivate { .. })
+            })
     }
 
     fn pane_mouse_position(&self, hit: &PaneHit, mouse: MouseEvent) -> ClientMousePosition {

@@ -745,6 +745,9 @@ pub(super) enum PendingManualFocusTarget {
     Tab(String),
     Workspace(String),
     PaneDirection,
+    PaneSplit,
+    TabCreate,
+    WorkspaceCreate,
 }
 
 pub(super) struct PendingManualFocus {

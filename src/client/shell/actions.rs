@@ -535,7 +535,13 @@ impl ClientShellState {
     }
 
     pub(crate) fn flush_coalesced_hover_pane_focus(&mut self, outcome: &mut ClientShellInput) {
-        if !(self.config.focus_pane_on_hover && self.config.mouse_capture) {
+        if self.hover_pane_focus.is_none() {
+            return;
+        }
+        if !self.hover_pane_focus_is_eligible() {
+            // A guarded interaction supersedes unsent pointer intent. Do not replay
+            // it when the guard closes; an already-sent slot still completes normally.
+            self.hover_pane_focus = None;
             return;
         }
         let Some(hover) = self.hover_pane_focus.as_ref() else {
@@ -580,7 +586,10 @@ impl ClientShellState {
                     PendingManualFocusTarget::Pane(id) => HoverEffectiveFocus::PendingPane(id),
                     PendingManualFocusTarget::Tab(_)
                     | PendingManualFocusTarget::Workspace(_)
-                    | PendingManualFocusTarget::PaneDirection => HoverEffectiveFocus::Untrusted,
+                    | PendingManualFocusTarget::PaneDirection
+                    | PendingManualFocusTarget::PaneSplit
+                    | PendingManualFocusTarget::TabCreate
+                    | PendingManualFocusTarget::WorkspaceCreate => HoverEffectiveFocus::Untrusted,
                 };
             }
         }
@@ -607,6 +616,15 @@ impl ClientShellState {
             crate::api::schema::Method::PaneFocusDirection(_) => {
                 PendingManualFocusTarget::PaneDirection
             }
+            crate::api::schema::Method::PaneSplit(params) if params.focus => {
+                PendingManualFocusTarget::PaneSplit
+            }
+            crate::api::schema::Method::TabCreate(params) if params.focus => {
+                PendingManualFocusTarget::TabCreate
+            }
+            crate::api::schema::Method::WorkspaceCreate(params) if params.focus => {
+                PendingManualFocusTarget::WorkspaceCreate
+            }
             _ => return,
         };
         self.hover_pane_focus = None;
@@ -622,7 +640,11 @@ impl ClientShellState {
         });
     }
 
-    fn complete_manual_focus(&mut self, request_id: &str, success: bool) {
+    fn complete_manual_focus(
+        &mut self,
+        request_id: &str,
+        result: &Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) {
         let Some(index) = self
             .pending_manual_focuses
             .iter()
@@ -630,9 +652,26 @@ impl ClientShellState {
         else {
             return;
         };
-        if !success {
+        let Ok(result) = result else {
             self.pending_manual_focuses.remove(index);
             return;
+        };
+        let pending = &mut self.pending_manual_focuses[index];
+        // Creation changes context, not merely pane focus. Resolve the target
+        // from the response so unrelated pane snapshots cannot acknowledge it.
+        match (&pending.target, result) {
+            (
+                PendingManualFocusTarget::TabCreate,
+                crate::api::schema::ResponseResult::TabCreated { tab, .. },
+            ) => pending.target = PendingManualFocusTarget::Tab(tab.tab_id.clone()),
+            (
+                PendingManualFocusTarget::WorkspaceCreate,
+                crate::api::schema::ResponseResult::WorkspaceCreated { workspace, .. },
+            ) => {
+                pending.target =
+                    PendingManualFocusTarget::Workspace(workspace.workspace_id.clone());
+            }
+            _ => {}
         }
         let generation = self.pending_manual_focuses[index].generation;
         self.pending_manual_focuses[index].awaiting_snapshot = true;
@@ -659,6 +698,15 @@ impl ClientShellState {
     ) {
         self.pending_manual_focuses
             .retain(|manual| manual.generation > generation);
+        // Newer success retires skipped intermediate effects even when its own
+        // snapshot arrived before the result.
+        if self
+            .hover_awaiting_snapshot
+            .as_ref()
+            .is_some_and(|hover| hover.generation < generation)
+        {
+            self.hover_awaiting_snapshot = None;
+        }
         if !snapshot_seen
             && self
                 .hover_awaiting_snapshot
@@ -774,8 +822,13 @@ impl ClientShellState {
                 PendingManualFocusTarget::Workspace(workspace_id) => {
                     snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())
                 }
-                PendingManualFocusTarget::PaneDirection => {
+                PendingManualFocusTarget::PaneDirection | PendingManualFocusTarget::PaneSplit => {
                     pending.awaiting_snapshot || pane_focus_changed
+                }
+                // A context snapshot clears these above, including before the
+                // result arrives. A pane-only change is not creation acknowledgement.
+                PendingManualFocusTarget::TabCreate | PendingManualFocusTarget::WorkspaceCreate => {
+                    false
                 }
             };
         }
@@ -1018,7 +1071,7 @@ impl ClientShellState {
                 return (false, outcome.actions);
             }
             PendingEndpointKind::Generic => {
-                self.complete_manual_focus(request_id, result.is_ok());
+                self.complete_manual_focus(request_id, &result);
             }
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {
