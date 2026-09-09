@@ -171,8 +171,18 @@ The workflow does not run local full checks, benchmarks, manual smoke tests,
 Nix checks, or upstream docs/distribution release checks. Release notes state
 these limits rather than attributing historical local results to a new source.
 
+Fork access checks require successful repository metadata and release-list API
+reads, with the returned owner/repository matching `codefriendly/herdr` exactly
+apart from ASCII letter case (GitHub repository names are case-insensitive).
+They do not rely on the optional user-token-style `permissions.pull` field:
+Actions uses its own `GITHUB_TOKEN`, not the local user's `gh` token. Metadata
+success alone does not prove write access or draft visibility. API failures stop
+the check; only an explicit 404 for the candidate tag GET means that tag is absent.
+Malformed metadata and identity mismatches have separate diagnostics without
+logging tokens or the complete API response.
+
 Both resolution and publication reject an existing tag or release, including
-drafts. Publication is serialized by the resolved release tag and atomically
+returned drafts. Publication is serialized by the resolved release tag and atomically
 creates a new tag before creating its own draft and uploading assets without
 replacement. Only that newly created draft is promoted to non-prerelease/latest.
 A race or partial failure stops the run; a reserved tag/draft is **not** cleaned
