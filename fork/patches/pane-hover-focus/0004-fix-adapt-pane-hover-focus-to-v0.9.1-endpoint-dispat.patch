@@ -1,0 +1,33 @@
+From 4db001daa8879ad5794104cc024a2a0c587d461c Mon Sep 17 00:00:00 2001
+From: Robert Holak <423088+rholak@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 18:08:12 -0500
+Subject: [PATCH 4/4] fix: adapt pane hover focus to v0.9.1 endpoint dispatch
+
+---
+ src/client/shell/tests/mouse_selection.rs | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/client/shell/tests/mouse_selection.rs b/src/client/shell/tests/mouse_selection.rs
+index 16b17d8e..1c1dbb7a 100644
+--- a/src/client/shell/tests/mouse_selection.rs
++++ b/src/client/shell/tests/mouse_selection.rs
+@@ -928,14 +928,14 @@ impl SerializedEndpointLane {
+     }
+ 
+     fn dispatch(&mut self, state: &mut ClientShellState, actions: Vec<ClientShellAction>) {
+-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
++        let mut scheduled_activation = None;
+         crate::client::shell_runtime::dispatch_client_shell_actions(
+             actions,
+             &mut self.commands,
+             &mut self.endpoints,
+             Some(state),
+             &mut Vec::new(),
+-            &tx,
++            &mut scheduled_activation,
+         )
+         .expect("serialized endpoint dispatch");
+     }
+-- 
+2.55.0
+

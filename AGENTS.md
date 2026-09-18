@@ -338,11 +338,15 @@ planned branch configuration is not proof that migration has happened.
   rebasing each branch's own fork commits onto the new tag with normal conflict
   resolution and validation.
 - Use fork `master` for fork CI, procedures, build profiles, and exported patch
-  sets—not feature implementation. Develop each feature on its own stable-based
-  branch and regenerate its archived patches from validated commits.
-- Build `pane-hover-focus` directly for the current single-patch-set release.
-  The manual workflow lives on fork `master`; no separate build branch is needed
-  unless a future release combines multiple independent patch sets.
+  sets—not feature implementation. Develop each feature on its own persistent
+  stable-based branch and regenerate its archived patches from validated commits.
+  Use stable role-based worktree names such as `pane-hover-focus`, not names tied
+  to one upstream release.
+- Always compose personal builds on `integration/codefriendly-release`, even
+  when the profile contains only one feature. Recreate it from the selected
+  stable tag, apply enabled feature patches in profile order, and record its
+  exact commit and tree. The manual workflow lives on fork `master` and builds
+  that immutable integration commit, never a feature branch directly.
 - Name personal releases `codefriendly-v<upstream-version>-r<revision>` and record
   the exact upstream base, patched source, patch inventory, and validation. Use
   the fork workflow, not upstream's release/channel publication machinery.

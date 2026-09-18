@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import unittest
@@ -22,7 +23,12 @@ def route_upstream(upstream):
     def local_git(*args, **kwargs):
         if args[0] == "fetch":
             # Exercise real Git while refusing any network or broader tag fetch.
-            if args != ("fetch", "--no-tags", "https://github.com/herdrdev/herdr.git", "refs/tags/v0.9.0"):
+            expected = ("fetch", "--no-tags", "https://github.com/herdrdev/herdr.git")
+            if (
+                len(args) != 4
+                or args[:3] != expected
+                or re.fullmatch(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+", args[3]) is None
+            ):
                 raise AssertionError(f"Unexpected fetch: {args}")
             args = ("fetch", "--no-tags", str(upstream), args[-1])
         return git(*args, **kwargs)
@@ -76,8 +82,11 @@ class VerifySourceTests(unittest.TestCase):
         self.archive = {
             "source_commit": release.git("rev-parse", "HEAD"),
             "source_tree": release.git("rev-parse", "HEAD^{tree}"),
-            "patches": ["0001-feature.patch"],
         }
+        self.patches = [{
+            "name": "pane-hover-focus",
+            "patches": ["0001-feature.patch"],
+        }]
         checkout = Path(temp.name) / "checkout"
         release.git("clone", "--no-tags", str(self.upstream), str(checkout))
         os.chdir(checkout)
@@ -95,28 +104,50 @@ class VerifySourceTests(unittest.TestCase):
     def test_verify_source_fetches_missing_lightweight_upstream_tag(self):
         self.tag_upstream()
         release.git("-C", str(self.upstream), "tag", "unrelated", self.archive["source_commit"])
-        release.verify_source(self.base, self.archive)
+        release.verify_source(self.base, self.archive, self.patches)
         self.assertEqual(release.git("rev-parse", "FETCH_HEAD^{commit}"), self.base["commit"])
         self.assertEqual(release.git("tag", "--list"), "")
 
     def test_verify_source_fetches_missing_annotated_upstream_tag(self):
         self.tag_upstream(annotated=True)
-        release.verify_source(self.base, self.archive)
+        release.verify_source(self.base, self.archive, self.patches)
         self.assertEqual(release.git("cat-file", "-t", "FETCH_HEAD"), "tag")
         self.assertEqual(release.git("rev-parse", "FETCH_HEAD^{commit}"), self.base["commit"])
         self.assertEqual(release.git("tag", "--list"), "")
 
+    def test_verify_source_reconstructs_multiple_patch_sets_in_profile_order(self):
+        first_source = self.archive["source_commit"]
+        Path("feature.txt").write_text("feature\nsecond feature\n")
+        release.git("add", "feature.txt")
+        release.git("commit", "-m", "second feature source")
+        second_dir = Path("fork/patches/second-feature")
+        second_dir.mkdir()
+        (second_dir / "0001-second-feature.patch").write_text(
+            release.git("diff", first_source, "HEAD") + "\n")
+        profile = {
+            "source_commit": release.git("rev-parse", "HEAD"),
+            "source_tree": release.git("rev-parse", "HEAD^{tree}"),
+        }
+        patches = [*self.patches, {
+            "name": "second-feature",
+            "patches": ["0001-second-feature.patch"],
+        }]
+        self.tag_upstream()
+        release.verify_source(self.base, profile, patches)
+        with self.assertRaises((ValueError, release.subprocess.CalledProcessError)):
+            release.verify_source(self.base, profile, list(reversed(patches)))
+
     def test_verify_source_ignores_and_preserves_wrong_local_tag(self):
         self.tag_upstream()
         release.git("tag", self.base["tag"], self.archive["source_commit"])
-        release.verify_source(self.base, self.archive)
+        release.verify_source(self.base, self.archive, self.patches)
         self.assertEqual(release.git("rev-parse", f"refs/tags/{self.base['tag']}"), self.archive["source_commit"])
 
     def test_verify_source_rejects_fetched_mismatch_despite_correct_local_tag(self):
         self.tag_upstream(commit=self.archive["source_commit"])
         release.git("tag", self.base["tag"], self.base["commit"])
         with self.assertRaisesRegex(ValueError, "stable tag mismatch"):
-            release.verify_source(self.base, self.archive)
+            release.verify_source(self.base, self.archive, self.patches)
         self.assertEqual(release.git("rev-parse", f"refs/tags/{self.base['tag']}"), self.base["commit"])
 
     def test_verify_source_fetch_failure_does_not_use_local_tag_or_stale_fetch_head(self):
@@ -124,7 +155,7 @@ class VerifySourceTests(unittest.TestCase):
         Path(".git/FETCH_HEAD").write_text(f"{self.base['commit']}\t\tstale tag\n")
         # The upstream repository is reachable, but lacks the requested tag.
         with self.assertRaises(release.subprocess.CalledProcessError):
-            release.verify_source(self.base, self.archive)
+            release.verify_source(self.base, self.archive, self.patches)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -132,7 +163,7 @@ class ReleaseTests(unittest.TestCase):
         self.cwd = Path.cwd()
         os.chdir(ROOT)
         self.addCleanup(os.chdir, self.cwd)
-        self.source = "7a7023194477e003adbb7d8dc1a0b86095104257"
+        self.source = "4db001daa8879ad5794104cc024a2a0c587d461c"
         self.env = patch.dict(os.environ, {
             "SOURCE_SHA": self.source, "REVISION": "1", "GH_TOKEN": "offline-test",
             "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
@@ -141,11 +172,13 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
 
     def test_metadata_identity(self):
-        base, archive, tag = release.metadata()
-        self.assertEqual(base["tag"], "v0.9.0")
-        self.assertEqual(archive["source_commit"], self.source)
-        self.assertEqual(tag, "codefriendly-v0.9.0-r1")
-        self.assertEqual(len(archive["patches"]), 3)
+        base, profile, patches, tag = release.metadata()
+        self.assertEqual(base["tag"], "v0.9.1")
+        self.assertEqual(profile["source_branch"], "integration/codefriendly-release")
+        self.assertEqual(profile["source_commit"], self.source)
+        self.assertEqual(tag, "codefriendly-v0.9.1-r1")
+        self.assertEqual([patch["name"] for patch in patches], ["pane-hover-focus"])
+        self.assertEqual(len(patches[0]["patches"]), 4)
 
     def test_reject_nonexact_source_and_invalid_revision(self):
         for source in ("pane-hover-focus", self.source[:12], self.source.upper(), "a" * 40, "$(echo unsafe)"):
@@ -170,24 +203,24 @@ class ReleaseTests(unittest.TestCase):
                         release.dispatch_context()
 
     def test_recorded_archive_reproduces_source(self):
-        base, archive, _ = release.metadata()
+        base, profile, patches, _ = release.metadata()
         with recorded_upstream(base):
-            release.verify_source(base, archive)
+            release.verify_source(base, profile, patches)
             with patch.object(release, "git", wraps=release.git) as git:
-                archive = dict(archive, source_tree="a" * 40)
+                profile = dict(profile, source_tree="a" * 40)
                 with self.assertRaisesRegex(ValueError, "Source tree mismatch"):
-                    release.verify_source(base, archive)
+                    release.verify_source(base, profile, patches)
                 self.assertFalse(any(call.args[0] == "read-tree" for call in git.call_args_list))
 
     def test_reordered_archive_fails(self):
-        base, archive, _ = release.metadata()
-        archive = dict(archive, patches=list(reversed(archive["patches"])))
+        base, profile, patches, _ = release.metadata()
+        patches = [dict(patches[0], patches=list(reversed(patches[0]["patches"])))]
         with recorded_upstream(base):
             with self.assertRaises((ValueError, release.subprocess.CalledProcessError)):
-                release.verify_source(base, archive)
+                release.verify_source(base, profile, patches)
 
     def test_upstream_published_stable_and_peeled_tag(self):
-        base, _, _ = release.metadata()
+        base, _, _, _ = release.metadata()
         stable = {"tag_name": base["tag"], "draft": False, "prerelease": False, "published_at": "2026-01-01"}
         commit = {"type": "commit", "sha": base["commit"]}
         for annotated in (False, True):
@@ -196,7 +229,7 @@ class ReleaseTests(unittest.TestCase):
                 responses.append({"object": commit})
             with patch.object(release, "api", side_effect=responses):
                 release.verify_upstream(base)
-        for change in ({"draft": True}, {"prerelease": True}, {"published_at": None}, {"tag_name": "v0.9.1"}):
+        for change in ({"draft": True}, {"prerelease": True}, {"published_at": None}, {"tag_name": "v9.9.9"}):
             with patch.object(release, "api", return_value=dict(stable, **change)):
                 with self.assertRaises(ValueError):
                     release.verify_upstream(base)
@@ -277,13 +310,15 @@ class ReleaseTests(unittest.TestCase):
                     release.api("/test", method="POST", data={}, missing=True)
 
     def test_notes_are_bounded_to_workflow_checks(self):
-        base, archive, _ = release.metadata()
-        body = release.notes(base, archive, "f" * 40)
-        for text in (base["commit"], self.source, archive["source_tree"], "f" * 40, "does not run `just check`",
+        base, profile, patches, _ = release.metadata()
+        body = release.notes(base, profile, patches, "f" * 40)
+        for text in (base["commit"], self.source, profile["source_tree"], "f" * 40, "does not run `just check`",
                      "Do not use the upstream Herdr updater", "does not attest to earlier local testing"):
             self.assertIn(text, body)
-        for filename in archive["patches"]:
-            self.assertIn(filename, body)
+        for patch_set in patches:
+            self.assertIn(patch_set["name"], body)
+            for filename in patch_set["patches"]:
+                self.assertIn(filename, body)
         self.assertNotIn("3312", body)
 
     def test_assets_exact_inventory_and_checksums(self):
@@ -304,7 +339,7 @@ class ReleaseTests(unittest.TestCase):
                 release.prepare_assets()
 
     def test_publication_preflight_failure_never_writes(self):
-        base, archive, tag = release.metadata()
+        base, profile, patches, tag = release.metadata()
         repo = {"full_name": release.REPOSITORY}
         failures = (
             [{"full_name": release.UPSTREAM}],
@@ -323,11 +358,11 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(release, "prepare_assets"), patch.object(release, "verify_upstream"), \
                     patch.object(release, "api", side_effect=responses) as api:
                 with self.assertRaises(ValueError):
-                    release.publish(base, archive, tag, "f" * 40)
+                    release.publish(base, profile, patches, tag, "f" * 40)
                 self.assertTrue(all(call.kwargs.get("method", "GET") == "GET" for call in api.call_args_list))
 
     def test_publication_reserves_tag_then_creates_own_draft_without_overwrite(self):
-        base, archive, tag = release.metadata()
+        base, profile, patches, tag = release.metadata()
         env = {"RESOLVED_SHA": self.source, "RESOLVED_TAG": tag}
         calls = []
         def fake_api(path, **kwargs):
@@ -344,11 +379,11 @@ class ReleaseTests(unittest.TestCase):
             with patch.dict(os.environ, env), patch.object(release, "prepare_assets", return_value=assets), \
                     patch.object(release, "verify_upstream"), patch.object(release, "check_available") as available, \
                     patch.object(release, "api", side_effect=fake_api):
-                release.publish(base, archive, tag, "f" * 40)
+                release.publish(base, profile, patches, tag, "f" * 40)
                 available.assert_called_once_with(tag)
             self.assertTrue(calls[0][0].endswith("/git/refs"))
             self.assertEqual(calls[0][1]["method"], "POST")
-            self.assertEqual(calls[1][1]["data"]["name"], "Codefriendly Herdr v0.9.0 — revision 1")
+            self.assertEqual(calls[1][1]["data"]["name"], "Codefriendly Herdr v0.9.1 — revision 1")
             uploads = [c for c in calls if "/assets?name=" in c[0]]
             self.assertEqual(len(uploads), 6)
             self.assertTrue(all(c[1]["method"] == "POST" and "/releases/42/" in c[0] for c in uploads))
@@ -357,7 +392,7 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(release, "verify_upstream"), patch.object(release, "check_available"), \
                     patch.object(release, "api", side_effect=ValueError("HTTP 422 collision")) as api:
                 with self.assertRaisesRegex(ValueError, "collision"):
-                    release.publish(base, archive, tag, "f" * 40)
+                    release.publish(base, profile, patches, tag, "f" * 40)
                 self.assertEqual(api.call_count, 1)
 
 
