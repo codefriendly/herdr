@@ -52,14 +52,17 @@ Both Linux builders then encountered a Google Chrome apt-index hash mismatch;
 the workflow now excludes that unused repository before updating apt, leaving
 preinstalled Chrome untouched. These fixes are included in the successful run.
 
-Deferred maintenance: the pinned cache and Zig actions emit Node deprecation
-warnings, including Node-20 actions forced onto Node 24. At the release audit,
-`actions/cache` v6.1.0 and `Swatinem/rust-cache` v2.9.2 declared native Node 24;
-latest `mlugg/setup-zig` v2.2.1 still declared Node 20. Review compatible pinned
-upgrades separately; do not simply remove the Node 24 override. These warnings
-did not block publication. The local v0.9.1 candidate instead follows upstream's
-`vercel-labs/setup-zig` v1.0.2 with Zig 0.16.0, so the `mlugg/setup-zig` warning
-applies only to the published v0.9.0 workflow history.
+Cache-action maintenance: commit `18ff0589` upgraded `actions/cache` to v6.1.0
+and `Swatinem/rust-cache` to v2.9.2, both native Node 24, in normal CI and the fork
+release workflow. [CI run 34401146078](https://github.com/codefriendly/herdr/actions/runs/34401146078)
+passed Linux, macOS, Windows, ConPTY packaging, and commit-subject checks. Cache
+runtime warnings and the `punycode`/`url.parse()` deprecations were absent. The
+updated fork release workflow has not been rerun.
+
+The published v0.9.0 workflow used `mlugg/setup-zig` v2.2.1 and retained its
+forced-Node-24 warning. The local v0.9.1 candidate instead follows upstream's
+`vercel-labs/setup-zig` v1.0.2 with Zig 0.16.0; that candidate workflow has not
+yet been run.
 
 Always verify upstream releases when selecting a future base; the release
 workflow checks the explicitly recorded tag, never follows `latest` or
