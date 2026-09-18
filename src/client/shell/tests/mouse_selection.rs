@@ -928,14 +928,14 @@ impl SerializedEndpointLane {
     }
 
     fn dispatch(&mut self, state: &mut ClientShellState, actions: Vec<ClientShellAction>) {
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let mut scheduled_activation = None;
         crate::client::shell_runtime::dispatch_client_shell_actions(
             actions,
             &mut self.commands,
             &mut self.endpoints,
             Some(state),
             &mut Vec::new(),
-            &tx,
+            &mut scheduled_activation,
         )
         .expect("serialized endpoint dispatch");
     }
