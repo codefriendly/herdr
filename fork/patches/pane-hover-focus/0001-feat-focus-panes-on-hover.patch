@@ -1,7 +1,7 @@
-From 1f74268f44b32f0e3819353a702ccea8e802efd7 Mon Sep 17 00:00:00 2001
+From 3c4815eba63915b69722e543a51fafdfa56fcbaf Mon Sep 17 00:00:00 2001
 From: Robert Holak <423088+rholak@users.noreply.github.com>
 Date: Tue, 8 Sep 2026 18:29:11 -0500
-Subject: [PATCH 1/3] feat: focus panes on hover
+Subject: [PATCH 1/4] feat: focus panes on hover
 
 ---
  .../website/src/data/config-reference.json    |    6 +
@@ -20,7 +20,7 @@ Subject: [PATCH 1/3] feat: focus panes on hover
  13 files changed, 2643 insertions(+), 17 deletions(-)
 
 diff --git a/docs/next/website/src/data/config-reference.json b/docs/next/website/src/data/config-reference.json
-index 444f6a17..ad618440 100644
+index 36afe337..4503996d 100644
 --- a/docs/next/website/src/data/config-reference.json
 +++ b/docs/next/website/src/data/config-reference.json
 @@ -899,6 +899,12 @@
@@ -37,10 +37,10 @@ index 444f6a17..ad618440 100644
            "key": "ui.copy_on_select",
            "type": "boolean",
 diff --git a/justfile b/justfile
-index f69bb38c..395ac1e3 100644
+index 5c42bee6..3c383ae0 100644
 --- a/justfile
 +++ b/justfile
-@@ -75,6 +75,10 @@ build:
+@@ -82,6 +82,10 @@ build:
  bench-render-scale:
      cargo test --release --locked --bin herdr render_scale_profile -- --ignored --nocapture --test-threads=1
  
@@ -119,7 +119,7 @@ index 8e77b796..846352b6 100644
      fn disconnect_returns_every_request_that_must_be_discarded() {
          let mut commands = commands_with_in_flight();
 diff --git a/src/client/shell/actions.rs b/src/client/shell/actions.rs
-index 834169fe..271ed85a 100644
+index 12d8cc16..7d35f9c5 100644
 --- a/src/client/shell/actions.rs
 +++ b/src/client/shell/actions.rs
 @@ -1,5 +1,11 @@
@@ -134,7 +134,7 @@ index 834169fe..271ed85a 100644
  impl ClientShellState {
      pub(super) fn record_binding(
          &mut self,
-@@ -405,6 +411,7 @@ impl ClientShellState {
+@@ -369,6 +375,7 @@ impl ClientShellState {
          let Some(snapshot) = self.snapshot.as_deref() else {
              return false;
          };
@@ -142,7 +142,7 @@ index 834169fe..271ed85a 100644
          let confirmation_workspace_id = match &method {
              crate::api::schema::Method::TabClose(target) => snapshot
                  .tabs
-@@ -421,18 +428,22 @@ impl ClientShellState {
+@@ -385,18 +392,22 @@ impl ClientShellState {
          let request_id = self.next_request_id;
          self.next_request_id = self.next_request_id.saturating_add(1);
          let request_id = format!("client-shell:{request_id}");
@@ -167,7 +167,7 @@ index 834169fe..271ed85a 100644
              request: Box::new(crate::api::schema::Request {
                  id: request_id,
                  method,
-@@ -441,6 +452,366 @@ impl ClientShellState {
+@@ -405,6 +416,366 @@ impl ClientShellState {
          true
      }
  
@@ -534,7 +534,7 @@ index 834169fe..271ed85a 100644
      pub(crate) fn receive_endpoint_error(&mut self, message: String) -> bool {
          self.push_endpoint_notice(
              ClientEndpointNoticeKind::Rejected,
-@@ -482,6 +853,9 @@ impl ClientShellState {
+@@ -446,6 +817,9 @@ impl ClientShellState {
      }
  
      pub(crate) fn cancel_endpoint_request(&mut self, request_id: &str) -> bool {
@@ -544,7 +544,7 @@ index 834169fe..271ed85a 100644
          let Some(pending) = self.pending_requests.get(request_id) else {
              return false;
          };
-@@ -508,8 +882,44 @@ impl ClientShellState {
+@@ -472,8 +846,44 @@ impl ClientShellState {
          request_id: &str,
          result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
      ) -> (bool, Vec<ClientShellAction>) {
@@ -590,7 +590,7 @@ index 834169fe..271ed85a 100644
          };
          if pending.boot_id != boot_id
              || self
-@@ -529,10 +939,14 @@ impl ClientShellState {
+@@ -496,10 +906,14 @@ impl ClientShellState {
          }
          if let Err(error) = &result {
              let code = error.code.as_deref().unwrap_or("invalid_response");
@@ -609,7 +609,7 @@ index 834169fe..271ed85a 100644
                  let (kind, notice_code, title, body) = match code {
                      "endpoint_timeout" => (
                          ClientEndpointNoticeKind::Timeout,
-@@ -563,7 +977,49 @@ impl ClientShellState {
+@@ -530,7 +944,49 @@ impl ClientShellState {
              }
          }
          match pending.kind {
@@ -657,10 +657,10 @@ index 834169fe..271ed85a 100644
 +            PendingEndpointKind::Generic => {
 +                self.complete_manual_focus(request_id, result.is_ok());
 +            }
+             PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
              PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                  return match result {
-                     Ok(_) => (false, Vec::new()),
-@@ -894,7 +1350,9 @@ impl ClientShellState {
+@@ -813,7 +1269,9 @@ impl ClientShellState {
              }
              Err(_) => true,
          };
@@ -672,10 +672,10 @@ index 834169fe..271ed85a 100644
  
      pub(super) fn endpoint_method_for_action(
 diff --git a/src/client/shell/config.rs b/src/client/shell/config.rs
-index e8a9b4bb..110418eb 100644
+index 2d16b00f..5aa31ce5 100644
 --- a/src/client/shell/config.rs
 +++ b/src/client/shell/config.rs
-@@ -55,7 +55,7 @@ impl ClientShellState {
+@@ -72,7 +72,7 @@ impl ClientShellState {
          match crate::config::load_live_config() {
              Ok(loaded) => {
                  let agent_panel_sort = self.config.agent_panel_sort;
@@ -684,7 +684,7 @@ index e8a9b4bb..110418eb 100644
                      &loaded.config,
                      &loaded.diagnostics,
                      &loaded.invalid_sections,
-@@ -92,6 +92,32 @@ impl ClientShellState {
+@@ -109,6 +109,32 @@ impl ClientShellState {
      }
  }
  
@@ -717,7 +717,7 @@ index e8a9b4bb..110418eb 100644
  impl ClientShellConfig {
      pub(crate) fn from_config(config: &Config) -> Self {
          let theme_runtime = crate::app::client_theme_runtime_from_config(config);
-@@ -131,6 +157,7 @@ impl ClientShellConfig {
+@@ -148,6 +174,7 @@ impl ClientShellConfig {
              prompt_new_workspace_name: config.ui.prompt_new_workspace_name,
              confirm_close: config.ui.confirm_close,
              mouse_capture: config.ui.mouse_capture,
@@ -725,7 +725,7 @@ index e8a9b4bb..110418eb 100644
              mouse_scroll_lines: config.ui.mouse_scroll_lines(),
              right_click_passthrough_modifiers: config.ui.right_click_passthrough_modifiers(),
              redraw_on_focus_gained: config.ui.redraw_on_focus_gained,
-@@ -321,6 +348,7 @@ impl ClientShellConfig {
+@@ -338,6 +365,7 @@ impl ClientShellConfig {
                  self.prompt_new_workspace_name = ui.prompt_new_workspace_name;
                  self.confirm_close = ui.confirm_close;
                  self.mouse_capture = ui.mouse_capture;
@@ -734,10 +734,10 @@ index e8a9b4bb..110418eb 100644
                  self.right_click_passthrough_modifiers = ui.right_click_passthrough_modifiers();
                  self.redraw_on_focus_gained = ui.redraw_on_focus_gained;
 diff --git a/src/client/shell/endpoints.rs b/src/client/shell/endpoints.rs
-index 2f5a8e46..8a21794d 100644
+index c27358e5..cce6780c 100644
 --- a/src/client/shell/endpoints.rs
 +++ b/src/client/shell/endpoints.rs
-@@ -288,11 +288,15 @@ impl ClientShellState {
+@@ -448,11 +448,15 @@ impl ClientShellState {
      }
  
      pub(super) fn supports_endpoint_method(&self, method: &crate::api::schema::Method) -> bool {
@@ -755,10 +755,10 @@ index 2f5a8e46..8a21794d 100644
  
      pub(super) fn focused_tab_count(&self) -> usize {
 diff --git a/src/client/shell/mouse.rs b/src/client/shell/mouse.rs
-index cd4a6c16..8e057385 100644
+index 0b9326d0..0f931d8e 100644
 --- a/src/client/shell/mouse.rs
 +++ b/src/client/shell/mouse.rs
-@@ -2185,14 +2185,17 @@ impl ClientShellState {
+@@ -2250,14 +2250,17 @@ impl ClientShellState {
              MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
              | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}
              MouseEventKind::Moved => {
@@ -780,7 +780,7 @@ index cd4a6c16..8e057385 100644
                  }
              }
              MouseEventKind::ScrollUp
-@@ -2221,6 +2224,29 @@ impl ClientShellState {
+@@ -2286,6 +2289,29 @@ impl ClientShellState {
          }
      }
  
@@ -811,10 +811,10 @@ index cd4a6c16..8e057385 100644
          let cell = ClientMousePosition::Cell {
              column: mouse.column.saturating_sub(hit.inner_rect.x),
 diff --git a/src/client/shell/state.rs b/src/client/shell/state.rs
-index 81845d35..baf5b88a 100644
+index 901c5a28..56e00b42 100644
 --- a/src/client/shell/state.rs
 +++ b/src/client/shell/state.rs
-@@ -98,6 +98,7 @@ pub(crate) struct ClientShellConfig {
+@@ -42,6 +42,7 @@ pub(crate) struct ClientShellConfig {
      pub(super) prompt_new_workspace_name: bool,
      pub(super) confirm_close: bool,
      pub(super) mouse_capture: bool,
@@ -822,7 +822,7 @@ index 81845d35..baf5b88a 100644
      pub(super) mouse_scroll_lines: usize,
      pub(super) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
      pub(super) redraw_on_focus_gained: bool,
-@@ -693,6 +694,10 @@ pub(super) enum PendingEndpointKind {
+@@ -635,6 +636,10 @@ pub(super) enum PendingEndpointKind {
          pane_id: String,
          serial: u64,
      },
@@ -833,7 +833,7 @@ index 81845d35..baf5b88a 100644
      WordSelection {
          pane_id: String,
          absolute_row: u32,
-@@ -720,6 +725,36 @@ pub(super) enum PendingEndpointKind {
+@@ -664,6 +669,36 @@ pub(super) enum PendingEndpointKind {
      },
  }
  
@@ -870,7 +870,7 @@ index 81845d35..baf5b88a 100644
  pub(super) struct PendingEndpointRequest {
      pub(super) boot_id: String,
      pub(super) method_name: String,
-@@ -955,6 +990,13 @@ pub(crate) struct ClientShellState {
+@@ -907,6 +942,13 @@ pub(crate) struct ClientShellState {
      pub(super) popup_pending: bool,
      pub(super) popup_pending_deadline: Option<std::time::Instant>,
      pub(super) next_request_id: u64,
@@ -884,7 +884,7 @@ index 81845d35..baf5b88a 100644
      pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
      pub(super) pending_integration_installs: usize,
      pub(super) pending_notifications: Vec<ClientPendingNotification>,
-@@ -1098,6 +1140,12 @@ impl ClientShellState {
+@@ -1069,6 +1111,12 @@ impl ClientShellState {
              popup_pending: false,
              popup_pending_deadline: None,
              next_request_id: 1,
@@ -897,20 +897,20 @@ index 81845d35..baf5b88a 100644
              pending_requests: HashMap::new(),
              pending_integration_installs: 0,
              pending_notifications: Vec::new(),
-@@ -1208,7 +1256,9 @@ impl ClientShellState {
-         self.reveal_focused_tab = true;
-         self.last_tab_bar_width = None;
+@@ -1217,7 +1265,9 @@ impl ClientShellState {
          self.last_composed_size = None;
+         self.last_composed_at = None;
+         self.selection_repaint_deadline = None;
 +        self.clear_pending_hover_pane_focuses();
          self.pending_requests.clear();
 +        self.pending_manual_focuses.clear();
          self.pane_scroll_in_flight.clear();
          self.pane_scroll_queued.clear();
          self.pane_scroll_targets.clear();
-@@ -1262,6 +1312,11 @@ impl ClientShellState {
-         {
-             return;
+@@ -1285,6 +1335,11 @@ impl ClientShellState {
+             self.pending_pane_surface = None;
          }
+         self.active_snapshot_generation = generation;
 +        let workspace_changed = self.snapshot.as_ref().is_some_and(|current| {
 +            current.focused_workspace_id != snapshot.focused_workspace_id
 +                || current.focused_tab_id != snapshot.focused_tab_id
@@ -920,7 +920,7 @@ index 81845d35..baf5b88a 100644
          let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
              current.commands.len() != snapshot.commands.len()
 diff --git a/src/client/shell/tests/mouse_selection.rs b/src/client/shell/tests/mouse_selection.rs
-index a8f5c532..9b46b411 100644
+index ae4168c2..cd3059fe 100644
 --- a/src/client/shell/tests/mouse_selection.rs
 +++ b/src/client/shell/tests/mouse_selection.rs
 @@ -1,5 +1,1971 @@
@@ -2893,22 +2893,22 @@ index a8f5c532..9b46b411 100644
 +}
 +
  #[test]
- fn ctrl_click_routes_link_activation_through_endpoint_then_client_host() {
+ fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
      let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
 diff --git a/src/client/shell/worktrees.rs b/src/client/shell/worktrees.rs
-index 8218c0cc..ff1972a2 100644
+index 56c554c8..80188b62 100644
 --- a/src/client/shell/worktrees.rs
 +++ b/src/client/shell/worktrees.rs
-@@ -542,6 +542,7 @@ impl ClientShellState {
+@@ -535,6 +535,7 @@ impl ClientShellState {
                  | PendingEndpointKind::IntegrationInstall
                  | PendingEndpointKind::SelectionCopy
                  | PendingEndpointKind::PaneScroll { .. }
 +                | PendingEndpointKind::HoverPaneFocus { .. }
                  | PendingEndpointKind::WordSelection { .. }
                  | PendingEndpointKind::PaneLinkActivate { .. }
-                 | PendingEndpointKind::CopyMotion { .. }
+                 | PendingEndpointKind::PaneLinkResolve { .. }
 diff --git a/src/client/shell_runtime.rs b/src/client/shell_runtime.rs
-index 00bb1406..963ad819 100644
+index 2e8d1c72..4647e408 100644
 --- a/src/client/shell_runtime.rs
 +++ b/src/client/shell_runtime.rs
 @@ -1,7 +1,7 @@
@@ -2947,7 +2947,7 @@ index 00bb1406..963ad819 100644
          match action {
              shell::ClientShellAction::Endpoint {
 diff --git a/src/config/model.rs b/src/config/model.rs
-index 604fe9ad..9ab72e99 100644
+index 6ef6274d..c40b4e79 100644
 --- a/src/config/model.rs
 +++ b/src/config/model.rs
 @@ -914,6 +914,8 @@ pub struct UiConfig {
@@ -2989,10 +2989,10 @@ index 604fe9ad..9ab72e99 100644
  
      #[test]
 diff --git a/src/main.rs b/src/main.rs
-index cf7cf5b4..651bfbff 100644
+index 8cfe9b0b..8efd3871 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -252,6 +252,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
+@@ -253,6 +253,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
  # Pane apps like lazygit and btop can still receive mouse when they request it.
  # mouse_capture = true
  
