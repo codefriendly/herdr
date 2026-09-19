@@ -3034,6 +3034,7 @@ fn install_hermes_errors_when_config_dir_missing() {
 #[test]
 fn bundled_integration_asset_versions_match_expected_versions() {
     for (name, asset, expected_version) in [
+        ("amp", AMP_PLUGIN_ASSET, AMP_INTEGRATION_VERSION),
         ("pi", PI_EXTENSION_ASSET, PI_INTEGRATION_VERSION),
         ("omp", OMP_EXTENSION_ASSET, OMP_INTEGRATION_VERSION),
         ("claude", CLAUDE_HOOK_ASSET, CLAUDE_INTEGRATION_VERSION),
@@ -3077,6 +3078,77 @@ fn bundled_integration_asset_versions_match_expected_versions() {
             "{name} asset version must match its integration version constant"
         );
     }
+}
+
+#[test]
+fn install_and_uninstall_amp_manage_only_the_herdr_plugin() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    let amp_dir = home.join(".config").join("amp");
+    let plugins_dir = amp_dir.join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    let unrelated_plugin = plugins_dir.join("keep.ts");
+    fs::write(&unrelated_plugin, "export default () => {}\n").unwrap();
+    std::env::set_var("HOME", &home);
+
+    let installed = install_amp().unwrap();
+    assert_eq!(
+        installed.plugin_path,
+        plugins_dir.join(AMP_PLUGIN_INSTALL_NAME)
+    );
+    assert_eq!(
+        fs::read_to_string(&installed.plugin_path).unwrap(),
+        AMP_PLUGIN_ASSET
+    );
+
+    let status = experimental_amp_integration_status().expect("amp integration status");
+    assert_eq!(status.label, "amp");
+    assert_eq!(status.path, installed.plugin_path);
+    assert_eq!(status.state, IntegrationStatusKind::Current);
+    assert_eq!(status.installed_version, Some(AMP_INTEGRATION_VERSION));
+
+    let removed = uninstall_amp().unwrap();
+    assert!(removed.removed_plugin);
+    assert!(!removed.plugin_path.exists());
+    assert!(unrelated_plugin.exists());
+
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn install_amp_honors_xdg_config_home() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let xdg = base.join("xdg");
+    let amp_dir = xdg.join("amp");
+    fs::create_dir_all(&amp_dir).unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &xdg);
+
+    let installed = install_amp().unwrap();
+    assert_eq!(
+        installed.plugin_path,
+        amp_dir.join("plugins").join(AMP_PLUGIN_INSTALL_NAME)
+    );
+
+    clear_integration_path_env();
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn install_amp_errors_when_config_dir_missing() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let home = base.join("home");
+    fs::create_dir_all(&home).unwrap();
+    std::env::set_var("HOME", &home);
+
+    let err = install_amp().unwrap_err().to_string();
+    assert!(err.contains("amp config directory not found"));
+
+    std::env::remove_var("HOME");
+    let _ = fs::remove_dir_all(base);
 }
 
 #[test]

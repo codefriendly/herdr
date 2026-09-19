@@ -225,6 +225,14 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
         ("herdr:grok", "grok", AgentSessionRefKind::Id) => {
             vec!["grok".into(), "--resume".into(), session_ref.value.clone()]
         }
+        ("herdr:amp", "amp", AgentSessionRefKind::Id) => {
+            vec![
+                "amp".into(),
+                "threads".into(),
+                "continue".into(),
+                session_ref.value.clone(),
+            ]
+        }
         ("herdr:letta", "letta", AgentSessionRefKind::Id) => {
             if let Some(agent_id) = session_ref.value.strip_prefix("default:") {
                 if agent_id.is_empty() {
@@ -283,6 +291,7 @@ pub(crate) fn is_official_agent_source(source: &str, agent: &str) -> bool {
             | ("herdr:antigravity_cli", "agy")
             | ("herdr:grok", "grok")
             | ("herdr:letta", "letta")
+            | ("herdr:amp", "amp")
     )
 }
 
@@ -536,6 +545,16 @@ mod tests {
             .unwrap()
             .argv,
             vec!["grok", "--resume", "grok-session"]
+        );
+        assert_eq!(
+            plan(
+                "herdr:amp",
+                "amp",
+                &AgentSessionRef::id("T-amp-session").unwrap()
+            )
+            .unwrap()
+            .argv,
+            vec!["amp", "threads", "continue", "T-amp-session"]
         );
         assert_eq!(
             plan(

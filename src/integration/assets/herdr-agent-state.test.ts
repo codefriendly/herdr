@@ -158,6 +158,57 @@ test("OpenCode stays disabled without the Herdr socket environment", async () =>
   expect(await HerdrAgentStatePlugin()).toEqual({});
 });
 
+test("Amp reports only the active thread as session identity", async () => {
+  const requests = await startRecordingServer("amp-session");
+  const handlers = new Map<string, Handler>();
+  const amp = {
+    activeThread: { current: { id: "T-active" } },
+    on(event: string, handler: Handler) {
+      handlers.set(event, handler);
+    },
+  };
+
+  const { default: install } = await importFresh("./amp/herdr-agent-session.ts");
+  install(amp);
+
+  const sessionStart = handlers.get("session.start");
+  expect(sessionStart).toBeDefined();
+  await sessionStart?.({ thread: { id: "T-background" } }, {});
+  expect(requests).toHaveLength(0);
+
+  await sessionStart?.({ thread: { id: "T-active" } }, {});
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    method: "pane.report_agent_session",
+    params: {
+      pane_id: "test:p1",
+      source: "herdr:amp",
+      agent: "amp",
+      agent_session_id: "T-active",
+      session_start_source: "select",
+    },
+  });
+  expect(requests[0]).not.toMatchObject({ method: "pane.report_agent" });
+});
+
+test("Amp plugin stays disabled outside Herdr", async () => {
+  delete process.env.HERDR_ENV;
+  delete process.env.HERDR_SOCKET_PATH;
+  delete process.env.HERDR_PANE_ID;
+  const handlers = new Map<string, Handler>();
+  const amp = {
+    activeThread: { current: null },
+    on(event: string, handler: Handler) {
+      handlers.set(event, handler);
+    },
+  };
+
+  const { default: install } = await importFresh("./amp/herdr-agent-session.ts");
+  install(amp);
+
+  expect(handlers.size).toBe(0);
+});
+
 for (const integration of integrations) {
   test(`${integration.name} maps the Windows socket marker path to a named pipe endpoint`, async () => {
     const markerPath = `herdr-${integration.name.toLowerCase().replaceAll(" ", "-")}-${process.pid}.sock`;

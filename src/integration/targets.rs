@@ -21,9 +21,10 @@ use super::config_edit::{
 };
 use super::config_file::{check_config_targets, write_config};
 use super::env::{
-    antigravity_cli_dir, claude_dir, codex_dir, copilot_dir, cursor_dir, devin_dir, droid_dir,
-    grok_dir, hermes_dir, hermes_plugin_dir, kilo_dir, kimi_dir, letta_dir, mastracode_dir,
-    omp_extension_dir, opencode_dir, opencode_state_dir, pi_extension_dir, qodercli_dir, qwen_dir,
+    amp_dir, antigravity_cli_dir, claude_dir, codex_dir, copilot_dir, cursor_dir, devin_dir,
+    droid_dir, grok_dir, hermes_dir, hermes_plugin_dir, kilo_dir, kimi_dir, letta_dir,
+    mastracode_dir, omp_extension_dir, opencode_dir, opencode_state_dir, pi_extension_dir,
+    qodercli_dir, qwen_dir,
 };
 use super::file_ops::{
     make_executable, remove_dir_all_if_exists, remove_file_if_exists, remove_legacy_bash_hook_file,
@@ -33,18 +34,20 @@ use super::opencode_config::{
     validate_tui_plugin_config,
 };
 use super::types::{
-    AntigravityCliInstallPaths, AntigravityCliUninstallResult, ClaudeInstallPaths,
-    ClaudeUninstallResult, CodexInstallPaths, CodexUninstallResult, CopilotInstallPaths,
-    CopilotUninstallResult, CursorInstallPaths, CursorUninstallResult, DevinInstallPaths,
-    DevinUninstallResult, DroidInstallPaths, DroidUninstallResult, GrokInstallPaths,
-    GrokUninstallResult, HermesInstallPaths, HermesUninstallResult, KiloInstallPaths,
-    KiloUninstallResult, KimiInstallPaths, KimiUninstallResult, LettaInstallPaths,
-    LettaUninstallResult, MastracodeInstallPaths, MastracodeUninstallResult, OmpInstallPaths,
-    OmpUninstallResult, OpenCodeInstallPaths, OpenCodeUninstallResult, PiUninstallResult,
-    QodercliInstallPaths, QodercliUninstallResult, QwenInstallPaths, QwenUninstallResult,
+    AmpInstallPaths, AmpUninstallResult, AntigravityCliInstallPaths, AntigravityCliUninstallResult,
+    ClaudeInstallPaths, ClaudeUninstallResult, CodexInstallPaths, CodexUninstallResult,
+    CopilotInstallPaths, CopilotUninstallResult, CursorInstallPaths, CursorUninstallResult,
+    DevinInstallPaths, DevinUninstallResult, DroidInstallPaths, DroidUninstallResult,
+    GrokInstallPaths, GrokUninstallResult, HermesInstallPaths, HermesUninstallResult,
+    KiloInstallPaths, KiloUninstallResult, KimiInstallPaths, KimiUninstallResult,
+    LettaInstallPaths, LettaUninstallResult, MastracodeInstallPaths, MastracodeUninstallResult,
+    OmpInstallPaths, OmpUninstallResult, OpenCodeInstallPaths, OpenCodeUninstallResult,
+    PiUninstallResult, QodercliInstallPaths, QodercliUninstallResult, QwenInstallPaths,
+    QwenUninstallResult,
 };
 use super::{
-    ANTIGRAVITY_CLI_HOOK_ASSET, ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
+    AMP_PLUGIN_ASSET, AMP_PLUGIN_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_ASSET,
+    ANTIGRAVITY_CLI_HOOK_BLOCK_NAME, ANTIGRAVITY_CLI_HOOK_EVENTS,
     ANTIGRAVITY_CLI_HOOK_INSTALL_NAME, ANTIGRAVITY_CLI_HOOK_TIMEOUT_SEC, CLAUDE_HOOK_ASSET,
     CLAUDE_HOOK_INSTALL_NAME, CODEX_HOOK_ASSET, CODEX_HOOK_INSTALL_NAME, COPILOT_HOOK_ASSET,
     COPILOT_HOOK_EVENTS, COPILOT_HOOK_INSTALL_NAME, COPILOT_REMOVED_LIFECYCLE_HOOK_EVENTS,
@@ -75,6 +78,32 @@ fn ensure_extension_dir(dir: &Path, agent: &str) -> io::Result<()> {
         "{agent} extension directory not found at {}. install {agent} first",
         dir.display()
     )))
+}
+
+pub(crate) fn install_amp() -> io::Result<AmpInstallPaths> {
+    let dir = amp_dir()?;
+    if !dir.is_dir() {
+        return Err(io::Error::other(format!(
+            "amp config directory not found at {}. install amp first",
+            dir.display()
+        )));
+    }
+
+    let plugins_dir = dir.join("plugins");
+    fs::create_dir_all(&plugins_dir)?;
+    let plugin_path = plugins_dir.join(AMP_PLUGIN_INSTALL_NAME);
+    fs::write(&plugin_path, AMP_PLUGIN_ASSET)?;
+
+    Ok(AmpInstallPaths { plugin_path })
+}
+
+pub(crate) fn uninstall_amp() -> io::Result<AmpUninstallResult> {
+    let plugin_path = amp_dir()?.join("plugins").join(AMP_PLUGIN_INSTALL_NAME);
+    let removed_plugin = remove_file_if_exists(&plugin_path)?;
+    Ok(AmpUninstallResult {
+        plugin_path,
+        removed_plugin,
+    })
 }
 
 pub(crate) fn install_pi() -> io::Result<PathBuf> {

@@ -1335,6 +1335,7 @@ impl TerminalState {
             ) | ("herdr:mastracode", "mastracode", Some("startup"))
                 | ("herdr:hermes", "hermes", Some("startup" | "new" | "resume"))
                 | ("herdr:opencode", "opencode", Some("select"))
+                | ("herdr:amp", "amp", Some("select"))
                 | ("herdr:pi", "pi", Some("new" | "resume" | "fork"))
                 | ("herdr:grok", "grok", Some("new"))
                 | (
@@ -4656,6 +4657,56 @@ mod tests {
                 .as_ref()
                 .map(|session| session.session_ref.value.as_str()),
             Some("qwen-parent")
+        );
+    }
+
+    #[test]
+    fn amp_selected_thread_replaces_existing_session_only_for_foreground_amp() {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Amp), AgentState::Idle);
+        terminal
+            .set_agent_session_ref(
+                "herdr:amp".into(),
+                "amp".into(),
+                crate::agent_resume::AgentSessionRef::id("T-old"),
+                None,
+            )
+            .expect("initial amp thread should be accepted");
+
+        let mutation = terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:amp".into(),
+                "amp".into(),
+                crate::agent_resume::AgentSessionRef::id("T-new"),
+                None,
+                Some("select".into()),
+            )
+            .expect("selected foreground amp thread should replace the saved thread");
+
+        assert!(mutation.session_ref_changed);
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("T-new")
+        );
+
+        terminal.set_detected_state(None, AgentState::Idle);
+        let background = terminal.set_agent_session_ref_for_session_start(
+            "herdr:amp".into(),
+            "amp".into(),
+            crate::agent_resume::AgentSessionRef::id("T-background"),
+            None,
+            Some("select".into()),
+        );
+        assert!(background.is_none());
+        assert_eq!(
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some("T-new")
         );
     }
 

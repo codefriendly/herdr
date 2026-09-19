@@ -1,6 +1,17 @@
 use std::path::PathBuf;
 
 #[derive(Debug)]
+pub(crate) struct AmpInstallPaths {
+    pub plugin_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub(crate) struct AmpUninstallResult {
+    pub plugin_path: PathBuf,
+    pub removed_plugin: bool,
+}
+
+#[derive(Debug)]
 pub(crate) struct ClaudeInstallPaths {
     pub hook_path: PathBuf,
     pub settings_path: PathBuf,

@@ -515,6 +515,26 @@ pub(crate) fn experimental_letta_integration_status() -> Option<super::Experimen
     })
 }
 
+/// Amp is intentionally kept out of the frozen client endpoint
+/// `IntegrationTarget` enum. Its plugin remains manageable through the local
+/// CLI until the integration API accepts extensible string identifiers.
+pub(crate) fn experimental_amp_integration_status() -> Option<super::ExperimentalIntegrationStatus>
+{
+    let path = amp_dir()
+        .ok()?
+        .join("plugins")
+        .join(super::AMP_PLUGIN_INSTALL_NAME);
+    let (state, installed_version) =
+        integration_state_for_path(&path, super::AMP_INTEGRATION_VERSION);
+    Some(super::ExperimentalIntegrationStatus {
+        label: "amp",
+        path,
+        state,
+        installed_version,
+        expected_version: super::AMP_INTEGRATION_VERSION,
+    })
+}
+
 pub(crate) fn parse_integration_version(content: &str) -> Option<u32> {
     content.lines().find_map(|line| {
         let marker_line = line

@@ -88,6 +88,14 @@ pub(crate) fn droid_dir() -> io::Result<PathBuf> {
     Ok(home_dir()?.join(".factory"))
 }
 
+pub(crate) fn amp_dir() -> io::Result<PathBuf> {
+    if let Some(value) = std::env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
+        return expand_tilde_path(PathBuf::from(value)).map(|path| path.join("amp"));
+    }
+
+    Ok(home_dir()?.join(".config").join("amp"))
+}
+
 pub(crate) fn config_dir_from_env_or_home(
     env_var: &str,
     home_relative_segments: &[&str],

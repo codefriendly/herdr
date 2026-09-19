@@ -2,13 +2,14 @@ use std::io;
 
 use super::registry::{integration_target_label, integration_target_supported};
 use super::targets::{
-    install_antigravity_cli, install_claude, install_codex, install_copilot, install_cursor,
-    install_devin, install_droid, install_grok, install_hermes, install_kilo, install_kimi,
-    install_letta, install_mastracode, install_omp, install_opencode, install_pi, install_qodercli,
-    install_qwen, uninstall_antigravity_cli, uninstall_claude, uninstall_codex, uninstall_copilot,
-    uninstall_cursor, uninstall_devin, uninstall_droid, uninstall_grok, uninstall_hermes,
-    uninstall_kilo, uninstall_kimi, uninstall_letta, uninstall_mastracode, uninstall_omp,
-    uninstall_opencode, uninstall_pi, uninstall_qodercli, uninstall_qwen,
+    install_amp, install_antigravity_cli, install_claude, install_codex, install_copilot,
+    install_cursor, install_devin, install_droid, install_grok, install_hermes, install_kilo,
+    install_kimi, install_letta, install_mastracode, install_omp, install_opencode, install_pi,
+    install_qodercli, install_qwen, uninstall_amp, uninstall_antigravity_cli, uninstall_claude,
+    uninstall_codex, uninstall_copilot, uninstall_cursor, uninstall_devin, uninstall_droid,
+    uninstall_grok, uninstall_hermes, uninstall_kilo, uninstall_kimi, uninstall_letta,
+    uninstall_mastracode, uninstall_omp, uninstall_opencode, uninstall_pi, uninstall_qodercli,
+    uninstall_qwen,
 };
 use super::version::{agent_version_requirement, enforce_agent_version};
 use super::{KIMI_MIN_VERSION, PI_EXTENSION_INSTALL_NAME};
@@ -19,6 +20,39 @@ pub(crate) fn install_target(
     let result = install_target_inner(target);
     let outcome = if result.is_ok() { "ok" } else { "error" };
     crate::logging::integration_action("install", integration_target_label(target), outcome);
+    result
+}
+
+/// Amp is kept out of the frozen client endpoint `IntegrationTarget` enum.
+/// The CLI-only installer remains available until the agent registry replaces it.
+pub(crate) fn install_experimental_amp() -> io::Result<Vec<String>> {
+    let result = install_amp().map(|installed| {
+        vec![format!(
+            "installed amp integration plugin to {}",
+            installed.plugin_path.display()
+        )]
+    });
+    let outcome = if result.is_ok() { "ok" } else { "error" };
+    crate::logging::integration_action("install", "amp", outcome);
+    result
+}
+
+pub(crate) fn uninstall_experimental_amp() -> io::Result<Vec<String>> {
+    let result = uninstall_amp().map(|result| {
+        if result.removed_plugin {
+            vec![format!(
+                "removed amp integration plugin at {}",
+                result.plugin_path.display()
+            )]
+        } else {
+            vec![format!(
+                "no amp integration plugin found at {}",
+                result.plugin_path.display()
+            )]
+        }
+    });
+    let outcome = if result.is_ok() { "ok" } else { "error" };
+    crate::logging::integration_action("uninstall", "amp", outcome);
     result
 }
 
