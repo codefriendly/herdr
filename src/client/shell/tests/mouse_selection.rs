@@ -619,6 +619,7 @@ fn hover_motion_is_disabled_without_local_mouse_capture_or_hover_preference() {
     let disabled = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
     assert!(disabled.actions.is_empty());
     assert!(disabled.requests.is_empty());
+    assert!(!disabled.repaint);
 
     let mut config = Config::default();
     config.ui.focus_pane_on_hover = true;
@@ -637,6 +638,101 @@ fn hover_motion_is_disabled_without_local_mouse_capture_or_hover_preference() {
         &capture_disabled.requests[..],
         [ClientMessage::ClientShellPaneInput { pane_id, .. }] if pane_id == "pane_2"
     ));
+}
+
+#[test]
+fn hover_focus_allows_ctrl_link_resolution_before_and_after_focus_snapshot() {
+    let mut state = hover_enabled_three_pane_state(false);
+    state.set_endpoint_methods(Some(vec!["pane.focus".into(), "pane.link.resolve".into()]));
+    let pane_2 = state.hits.panes[1].clone();
+    let mouse = crossterm::event::MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: pane_2.inner_rect.x + 1,
+        row: pane_2.inner_rect.y,
+        modifiers: KeyModifiers::CONTROL,
+    };
+    let input = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    let [ClientShellAction::Endpoint {
+        request: resolve, ..
+    }, ClientShellAction::Endpoint { request: focus, .. }] = &input.actions[..]
+    else {
+        panic!("expected link resolution followed by hover focus");
+    };
+    assert!(
+        matches!(&resolve.method, crate::api::schema::Method::PaneLinkResolve(target)
+        if target.pane_id == "pane_2")
+    );
+    assert!(
+        matches!(&focus.method, crate::api::schema::Method::PaneFocus(target)
+        if target.pane_id == "pane_2")
+    );
+    let (repaint, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &resolve.id,
+        Ok(crate::api::schema::ResponseResult::PaneLinkResolved {
+            regions: vec![crate::api::schema::PaneLinkRegion {
+                row: 0,
+                start_col: 1,
+                end_col: 1,
+            }],
+        }),
+    );
+    assert!(repaint);
+    assert!(
+        actions.is_empty(),
+        "link hover must not open or activate anything"
+    );
+    let (_, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &focus.id,
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+    );
+    assert!(actions.is_empty());
+
+    let mut next_surface = state.pane_surface.as_ref().unwrap().clone();
+    next_surface.projection_revision = 2;
+    next_surface.surface_revision = 2;
+    for pane in &mut next_surface.panes {
+        pane.focused = pane.pane_id == "pane_2";
+    }
+    state.set_snapshot(Box::new(snapshot_focused("pane_2", 2)));
+    // Refresh hit geometry before checking the link again, preserving upstream's
+    // stale-content protection rather than requiring an old underline to survive.
+    state.set_pane_surface(next_surface);
+    state.compose(106, 20).unwrap();
+    let refreshed = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    let [ClientShellAction::Endpoint { request, .. }] = &refreshed.actions[..] else {
+        panic!("expected only link re-resolution after hover focus settles");
+    };
+    assert!(
+        matches!(&request.method, crate::api::schema::Method::PaneLinkResolve(target)
+        if target.pane_id == "pane_2")
+    );
+    let (repaint, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &request.id,
+        Ok(crate::api::schema::ResponseResult::PaneLinkResolved {
+            regions: vec![crate::api::schema::PaneLinkRegion {
+                row: 0,
+                start_col: 1,
+                end_col: 1,
+            }],
+        }),
+    );
+    assert!(repaint);
+    assert!(actions.is_empty());
+    let frame = state.compose(106, 20).unwrap();
+    let pane = &state.hits.panes[1];
+    let cell = &frame.cells[usize::from(pane.inner_rect.y) * usize::from(frame.width)
+        + usize::from(pane.inner_rect.x + 1)];
+    assert_ne!(cell.modifier & Modifier::UNDERLINED.bits(), 0);
+    let repeated = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    assert!(
+        repeated.actions.is_empty(),
+        "resolved link and settled focus stay cached"
+    );
+    assert!(!repeated.repaint);
+    assert!(state.selection.is_none());
 }
 
 #[test]

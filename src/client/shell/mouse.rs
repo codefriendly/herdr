@@ -2270,12 +2270,10 @@ impl ClientShellState {
             MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
             | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}
             MouseEventKind::Moved => {
-                if let Some(pane_index) = self
-                    .hits
-                    .panes
-                    .iter()
-                    .position(|hit| super::contains(hit.inner_rect, point))
-                {
+                if let Some(pane_index) = self.hits.panes.iter().position(|hit| {
+                    (self.config.focus_pane_on_hover || hit.mouse_reporting)
+                        && super::contains(hit.inner_rect, point)
+                }) {
                     self.maybe_focus_hovered_pane(pane_index, outcome);
                     let hit = &self.hits.panes[pane_index];
                     if hit.mouse_reporting {
