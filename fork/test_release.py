@@ -163,7 +163,7 @@ class ReleaseTests(unittest.TestCase):
         self.cwd = Path.cwd()
         os.chdir(ROOT)
         self.addCleanup(os.chdir, self.cwd)
-        self.source = "4db001daa8879ad5794104cc024a2a0c587d461c"
+        self.source = "8f9cbf62b67517b5fe32829e7abc5a92f52dcddf"
         self.env = patch.dict(os.environ, {
             "SOURCE_SHA": self.source, "REVISION": "1", "GH_TOKEN": "offline-test",
             "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "1",
@@ -173,12 +173,12 @@ class ReleaseTests(unittest.TestCase):
 
     def test_metadata_identity(self):
         base, profile, patches, tag = release.metadata()
-        self.assertEqual(base["tag"], "v0.9.1")
+        self.assertEqual(base["tag"], "v0.9.3")
         self.assertEqual(profile["source_branch"], "integration/codefriendly-release")
         self.assertEqual(profile["source_commit"], self.source)
-        self.assertEqual(tag, "codefriendly-v0.9.1-r1")
+        self.assertEqual(tag, "codefriendly-v0.9.3-r1")
         self.assertEqual([patch["name"] for patch in patches], ["pane-hover-focus"])
-        self.assertEqual(len(patches[0]["patches"]), 4)
+        self.assertEqual(len(patches[0]["patches"]), 5)
 
     def test_reject_nonexact_source_and_invalid_revision(self):
         for source in ("pane-hover-focus", self.source[:12], self.source.upper(), "a" * 40, "$(echo unsafe)"):
@@ -383,7 +383,7 @@ class ReleaseTests(unittest.TestCase):
                 available.assert_called_once_with(tag)
             self.assertTrue(calls[0][0].endswith("/git/refs"))
             self.assertEqual(calls[0][1]["method"], "POST")
-            self.assertEqual(calls[1][1]["data"]["name"], "Codefriendly Herdr v0.9.1 — revision 1")
+            self.assertEqual(calls[1][1]["data"]["name"], "Codefriendly Herdr v0.9.3 — revision 1")
             uploads = [c for c in calls if "/assets?name=" in c[0]]
             self.assertEqual(len(uploads), 6)
             self.assertTrue(all(c[1]["method"] == "POST" and "/releases/42/" in c[0] for c in uploads))

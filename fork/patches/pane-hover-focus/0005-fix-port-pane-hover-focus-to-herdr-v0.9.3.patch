@@ -1,0 +1,218 @@
+From 8f9cbf62b67517b5fe32829e7abc5a92f52dcddf Mon Sep 17 00:00:00 2001
+From: Robert Holak <423088+rholak@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 18:26:18 -0500
+Subject: [PATCH 5/5] fix: port pane hover focus to herdr v0.9.3
+
+---
+ src/client/shell/mouse.rs                     | 10 +-
+ src/client/shell/tests/mouse_selection.rs     | 96 +++++++++++++++++++
+ .../shell/tests/workspace_navigation.rs       | 61 ++++++++++++
+ 3 files changed, 161 insertions(+), 6 deletions(-)
+
+diff --git a/src/client/shell/mouse.rs b/src/client/shell/mouse.rs
+index 8fcce432..372bf09f 100644
+--- a/src/client/shell/mouse.rs
++++ b/src/client/shell/mouse.rs
+@@ -2270,12 +2270,10 @@ impl ClientShellState {
+             MouseEventKind::Up(MouseButton::Left | MouseButton::Middle)
+             | MouseEventKind::Drag(MouseButton::Left | MouseButton::Middle) => {}
+             MouseEventKind::Moved => {
+-                if let Some(pane_index) = self
+-                    .hits
+-                    .panes
+-                    .iter()
+-                    .position(|hit| super::contains(hit.inner_rect, point))
+-                {
++                if let Some(pane_index) = self.hits.panes.iter().position(|hit| {
++                    (self.config.focus_pane_on_hover || hit.mouse_reporting)
++                        && super::contains(hit.inner_rect, point)
++                }) {
+                     self.maybe_focus_hovered_pane(pane_index, outcome);
+                     let hit = &self.hits.panes[pane_index];
+                     if hit.mouse_reporting {
+diff --git a/src/client/shell/tests/mouse_selection.rs b/src/client/shell/tests/mouse_selection.rs
+index 1c1dbb7a..9e9ea23b 100644
+--- a/src/client/shell/tests/mouse_selection.rs
++++ b/src/client/shell/tests/mouse_selection.rs
+@@ -619,6 +619,7 @@ fn hover_motion_is_disabled_without_local_mouse_capture_or_hover_preference() {
+     let disabled = state.handle_raw_events(vec![hover_mouse(MouseEventKind::Moved, &pane_2)]);
+     assert!(disabled.actions.is_empty());
+     assert!(disabled.requests.is_empty());
++    assert!(!disabled.repaint);
+ 
+     let mut config = Config::default();
+     config.ui.focus_pane_on_hover = true;
+@@ -639,6 +640,101 @@ fn hover_motion_is_disabled_without_local_mouse_capture_or_hover_preference() {
+     ));
+ }
+ 
++#[test]
++fn hover_focus_allows_ctrl_link_resolution_before_and_after_focus_snapshot() {
++    let mut state = hover_enabled_three_pane_state(false);
++    state.set_endpoint_methods(Some(vec!["pane.focus".into(), "pane.link.resolve".into()]));
++    let pane_2 = state.hits.panes[1].clone();
++    let mouse = crossterm::event::MouseEvent {
++        kind: MouseEventKind::Moved,
++        column: pane_2.inner_rect.x + 1,
++        row: pane_2.inner_rect.y,
++        modifiers: KeyModifiers::CONTROL,
++    };
++    let input = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
++    let [ClientShellAction::Endpoint {
++        request: resolve, ..
++    }, ClientShellAction::Endpoint { request: focus, .. }] = &input.actions[..]
++    else {
++        panic!("expected link resolution followed by hover focus");
++    };
++    assert!(
++        matches!(&resolve.method, crate::api::schema::Method::PaneLinkResolve(target)
++        if target.pane_id == "pane_2")
++    );
++    assert!(
++        matches!(&focus.method, crate::api::schema::Method::PaneFocus(target)
++        if target.pane_id == "pane_2")
++    );
++    let (repaint, actions) = state.handle_endpoint_result(
++        "boot-1",
++        &resolve.id,
++        Ok(crate::api::schema::ResponseResult::PaneLinkResolved {
++            regions: vec![crate::api::schema::PaneLinkRegion {
++                row: 0,
++                start_col: 1,
++                end_col: 1,
++            }],
++        }),
++    );
++    assert!(repaint);
++    assert!(
++        actions.is_empty(),
++        "link hover must not open or activate anything"
++    );
++    let (_, actions) = state.handle_endpoint_result(
++        "boot-1",
++        &focus.id,
++        Ok(crate::api::schema::ResponseResult::Ok {}),
++    );
++    assert!(actions.is_empty());
++
++    let mut next_surface = state.pane_surface.as_ref().unwrap().clone();
++    next_surface.projection_revision = 2;
++    next_surface.surface_revision = 2;
++    for pane in &mut next_surface.panes {
++        pane.focused = pane.pane_id == "pane_2";
++    }
++    state.set_snapshot(Box::new(snapshot_focused("pane_2", 2)));
++    // Refresh hit geometry before checking the link again, preserving upstream's
++    // stale-content protection rather than requiring an old underline to survive.
++    state.set_pane_surface(next_surface);
++    state.compose(106, 20).unwrap();
++    let refreshed = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
++    let [ClientShellAction::Endpoint { request, .. }] = &refreshed.actions[..] else {
++        panic!("expected only link re-resolution after hover focus settles");
++    };
++    assert!(
++        matches!(&request.method, crate::api::schema::Method::PaneLinkResolve(target)
++        if target.pane_id == "pane_2")
++    );
++    let (repaint, actions) = state.handle_endpoint_result(
++        "boot-1",
++        &request.id,
++        Ok(crate::api::schema::ResponseResult::PaneLinkResolved {
++            regions: vec![crate::api::schema::PaneLinkRegion {
++                row: 0,
++                start_col: 1,
++                end_col: 1,
++            }],
++        }),
++    );
++    assert!(repaint);
++    assert!(actions.is_empty());
++    let frame = state.compose(106, 20).unwrap();
++    let pane = &state.hits.panes[1];
++    let cell = &frame.cells[usize::from(pane.inner_rect.y) * usize::from(frame.width)
++        + usize::from(pane.inner_rect.x + 1)];
++    assert_ne!(cell.modifier & Modifier::UNDERLINED.bits(), 0);
++    let repeated = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
++    assert!(
++        repeated.actions.is_empty(),
++        "resolved link and settled focus stay cached"
++    );
++    assert!(!repeated.repaint);
++    assert!(state.selection.is_none());
++}
++
+ #[test]
+ fn hover_motion_does_not_retarget_selection_or_pane_mouse_gestures() {
+     let mut selection_state = hover_enabled_three_pane_state(false);
+diff --git a/src/client/shell/tests/workspace_navigation.rs b/src/client/shell/tests/workspace_navigation.rs
+index c117a319..615207d9 100644
+--- a/src/client/shell/tests/workspace_navigation.rs
++++ b/src/client/shell/tests/workspace_navigation.rs
+@@ -900,6 +900,67 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
+     }
+ }
+ 
++#[test]
++fn hover_focus_clears_pending_navigation_highlight_without_waiting_for_snapshot() {
++    let mut state = local_navigation_state(false);
++    state.config.focus_pane_on_hover = true;
++    let mut projected = workspaces(3);
++    let mut pane = projected.panes[0].clone();
++    pane.pane_id = "pane_2".into();
++    pane.focused = false;
++    projected.panes.push(pane);
++    state.set_snapshot(Box::new(projected));
++    let mut pane_surface = surface();
++    pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
++        &Buffer::with_lines(["AAA BBB", "AAA BBB"]),
++        None,
++        &[],
++    );
++    pane_surface.panes[0].rect.width = 3;
++    pane_surface.panes[0].inner_rect.width = 3;
++    let mut pane = pane_surface.panes[0].clone();
++    pane.pane_id = "pane_2".into();
++    pane.focused = false;
++    pane.rect.x = 4;
++    pane.inner_rect.x = 4;
++    pane_surface.panes.push(pane);
++    state.set_pane_surface(pane_surface);
++    state.compose(100, 28).unwrap();
++
++    let navigation_id = request_local_navigation(&mut state, 2);
++    assert!(state.pending_workspace_highlight.is_some());
++    let pane = &state.hits.panes[1];
++    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
++        kind: MouseEventKind::Moved,
++        column: pane.inner_rect.x + 1,
++        row: pane.inner_rect.y,
++        modifiers: KeyModifiers::empty(),
++    })]);
++    assert!(
++        matches!(&outcome.actions[..], [ClientShellAction::Endpoint { request, .. }]
++        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target)
++            if target.pane_id == "pane_2"))
++    );
++    assert!(
++        outcome.repaint,
++        "clear the speculative workspace highlight immediately"
++    );
++    assert!(state.pending_workspace_highlight.is_none());
++    state.handle_endpoint_result(
++        "boot-1",
++        &navigation_id,
++        Ok(crate::api::schema::ResponseResult::Ok {}),
++    );
++    assert!(
++        state.pending_workspace_highlight.is_none(),
++        "older completion cannot restore it"
++    );
++    assert_eq!(
++        state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
++        Some("pane_1")
++    );
++}
++
+ #[test]
+ fn cancelled_close_does_not_restore_an_older_navigation_highlight() {
+     let mut state = local_navigation_state(false);

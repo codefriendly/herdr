@@ -1,7 +1,7 @@
-From 4db001daa8879ad5794104cc024a2a0c587d461c Mon Sep 17 00:00:00 2001
+From 4b1abcb960a3e4ffb430d12eb22379767410f5ae Mon Sep 17 00:00:00 2001
 From: Robert Holak <423088+rholak@users.noreply.github.com>
 Date: Fri, 18 Sep 2026 18:08:12 -0500
-Subject: [PATCH 4/4] fix: adapt pane hover focus to v0.9.1 endpoint dispatch
+Subject: [PATCH 4/5] fix: adapt pane hover focus to v0.9.1 endpoint dispatch
 
 ---
  src/client/shell/tests/mouse_selection.rs | 4 ++--
@@ -28,6 +28,3 @@ index 16b17d8e..1c1dbb7a 100644
          )
          .expect("serialized endpoint dispatch");
      }
--- 
-2.55.0
-

@@ -1,7 +1,7 @@
-From 5d385dd6ec64eefc3974cd574592d268436ee651 Mon Sep 17 00:00:00 2001
+From 989970cda8be891cc0b5e8ba6ea787a4e6813b2c Mon Sep 17 00:00:00 2001
 From: Robert Holak <423088+rholak@users.noreply.github.com>
 Date: Tue, 8 Sep 2026 19:48:09 -0500
-Subject: [PATCH 2/4] fix: preserve hover focus ordering and interaction guards
+Subject: [PATCH 2/5] fix: preserve hover focus ordering and interaction guards
 
 ---
  src/client/shell/actions.rs               |  65 ++-
@@ -11,10 +11,10 @@ Subject: [PATCH 2/4] fix: preserve hover focus ordering and interaction guards
  4 files changed, 689 insertions(+), 38 deletions(-)
 
 diff --git a/src/client/shell/actions.rs b/src/client/shell/actions.rs
-index 7d35f9c5..9948042b 100644
+index 9a051efe..b7579e1f 100644
 --- a/src/client/shell/actions.rs
 +++ b/src/client/shell/actions.rs
-@@ -499,7 +499,13 @@ impl ClientShellState {
+@@ -523,7 +523,13 @@ impl ClientShellState {
      }
  
      pub(crate) fn flush_coalesced_hover_pane_focus(&mut self, outcome: &mut ClientShellInput) {
@@ -29,7 +29,7 @@ index 7d35f9c5..9948042b 100644
              return;
          }
          let Some(hover) = self.hover_pane_focus.as_ref() else {
-@@ -544,7 +550,10 @@ impl ClientShellState {
+@@ -568,7 +574,10 @@ impl ClientShellState {
                      PendingManualFocusTarget::Pane(id) => HoverEffectiveFocus::PendingPane(id),
                      PendingManualFocusTarget::Tab(_)
                      | PendingManualFocusTarget::Workspace(_)
@@ -41,7 +41,7 @@ index 7d35f9c5..9948042b 100644
                  };
              }
          }
-@@ -571,6 +580,15 @@ impl ClientShellState {
+@@ -595,6 +604,15 @@ impl ClientShellState {
              crate::api::schema::Method::PaneFocusDirection(_) => {
                  PendingManualFocusTarget::PaneDirection
              }
@@ -57,7 +57,7 @@ index 7d35f9c5..9948042b 100644
              _ => return,
          };
          self.hover_pane_focus = None;
-@@ -586,7 +604,11 @@ impl ClientShellState {
+@@ -610,7 +628,11 @@ impl ClientShellState {
          });
      }
  
@@ -70,7 +70,7 @@ index 7d35f9c5..9948042b 100644
          let Some(index) = self
              .pending_manual_focuses
              .iter()
-@@ -594,9 +616,26 @@ impl ClientShellState {
+@@ -618,9 +640,26 @@ impl ClientShellState {
          else {
              return;
          };
@@ -98,7 +98,7 @@ index 7d35f9c5..9948042b 100644
          }
          let generation = self.pending_manual_focuses[index].generation;
          self.pending_manual_focuses[index].awaiting_snapshot = true;
-@@ -623,6 +662,15 @@ impl ClientShellState {
+@@ -647,6 +686,15 @@ impl ClientShellState {
      ) {
          self.pending_manual_focuses
              .retain(|manual| manual.generation > generation);
@@ -114,7 +114,7 @@ index 7d35f9c5..9948042b 100644
          if !snapshot_seen
              && self
                  .hover_awaiting_snapshot
-@@ -738,9 +786,14 @@ impl ClientShellState {
+@@ -762,9 +810,14 @@ impl ClientShellState {
                  PendingManualFocusTarget::Workspace(workspace_id) => {
                      snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str())
                  }
@@ -130,7 +130,7 @@ index 7d35f9c5..9948042b 100644
              };
          }
          self.pending_manual_focuses
-@@ -985,7 +1038,7 @@ impl ClientShellState {
+@@ -1016,7 +1069,7 @@ impl ClientShellState {
                  return (false, outcome.actions);
              }
              PendingEndpointKind::Generic => {
@@ -140,10 +140,10 @@ index 7d35f9c5..9948042b 100644
              PendingEndpointKind::PaneLinkResolve { .. } => unreachable!("handled above"),
              PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
 diff --git a/src/client/shell/mouse.rs b/src/client/shell/mouse.rs
-index 0f931d8e..7bb3b722 100644
+index 179b6b72..09c0631e 100644
 --- a/src/client/shell/mouse.rs
 +++ b/src/client/shell/mouse.rs
-@@ -2290,28 +2290,32 @@ impl ClientShellState {
+@@ -2310,28 +2310,32 @@ impl ClientShellState {
      }
  
      fn maybe_focus_hovered_pane(&mut self, pane_index: usize, outcome: &mut ClientShellInput) {
@@ -194,10 +194,10 @@ index 0f931d8e..7bb3b722 100644
          let cell = ClientMousePosition::Cell {
              column: mouse.column.saturating_sub(hit.inner_rect.x),
 diff --git a/src/client/shell/state.rs b/src/client/shell/state.rs
-index 56e00b42..1245c51e 100644
+index ac60accd..29616ae9 100644
 --- a/src/client/shell/state.rs
 +++ b/src/client/shell/state.rs
-@@ -689,6 +689,9 @@ pub(super) enum PendingManualFocusTarget {
+@@ -698,6 +698,9 @@ pub(super) enum PendingManualFocusTarget {
      Tab(String),
      Workspace(String),
      PaneDirection,
@@ -860,6 +860,3 @@ index cd3059fe..5db3ebcc 100644
      );
      assert!(state.visible_endpoint_notice.is_none());
  }
--- 
-2.55.0
-

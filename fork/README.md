@@ -7,25 +7,47 @@ subject to upstream's contributor policy.
 
 ## Status
 
-The published personal fork remains on upstream stable `v0.9.0`. A local
-maintenance branch now rebases the fork history onto selected upstream stable
-`v0.9.1` (`065ef9d6a531c49fb8bee7e818ef837065b21ee9`). The independently maintained
-`pane-hover-focus` branch is ported to that base at
-`4db001daa8879ad5794104cc024a2a0c587d461c`; its four ordered exports and exact
-tree are recorded under `fork/patches/pane-hover-focus/`. The current
-`integration/codefriendly-release` profile contains that feature and resolves to
-the same commit and tree. Profile reconstruction has matched the integrated
-source. Feature implementation remains absent from the maintenance branch by
-design.
+The published personal release is
+[Codefriendly Herdr v0.9.1 — revision 1](https://github.com/codefriendly/herdr/releases/tag/codefriendly-v0.9.1-r1),
+published September 19, 2026 as latest and non-prerelease, at source/tag commit
+`4db001daa8879ad5794104cc024a2a0c587d461c`. Its release notes record native
+glibc Linux x86_64 and Apple Silicon macOS binaries only; GitHub-hosted release
+builds were not completed for that release. Do not confuse those two binaries
+with the fork workflow's five-target portable asset set.
 
-The v0.9.1 source passed formatting, clippy, 3,686 Rust tests with 7 skipped,
-maintenance tests, the 1/16-pane hover profile, and the render scaling profile.
-`just check` reached the Windows cross-lint gate, which could not run because this
-machine has no configured Windows SDK. `just bench-release-smoke` built the
-optimized candidate but could not run because `pidstat` is not installed. Manual
-hover and release-binary smoke validation remain pending. The local v0.9.1
-feature, integration, and maintenance branches have not been pushed or
+Local preparation now targets upstream stable `v0.9.3`
+(`7b116c05bfda646af39d2524c54e70c751f57ee8`). The independently maintained
+`pane-hover-focus` branch and the reconstructed
+`integration/codefriendly-release` profile resolve to
+`8f9cbf62b67517b5fe32829e7abc5a92f52dcddf`, tree
+`649660900ef547cb0a13f459b6caa74b0c310656`. The five ordered exports in
+`fork/patches/pane-hover-focus/` independently reproduce the feature tree and,
+when applied in profile order from the exact stable base, the integration tree.
+The profile contains only hover; the separate `amp-session-restore` branch is
+not included. Old local hover and integration tips are preserved as
+`backup/pane-hover-focus-v0.9.1` and `backup/codefriendly-release-v0.9.1`.
+
+Fork build metadata is prepared separately in the
+`maintenance/codefriendly-release` branch/worktree. Feature implementation is
+absent from that maintenance source by design. Fork `master` still carries the
+published v0.9.1 metadata until the preparation is committed and deliberately
+promoted. No v0.9.3 branches, workflow metadata, or release have been pushed or
 published.
+
+The exact v0.9.3 hover source passed formatting, Clippy, 3,933 Rust tests with 15
+skipped, maintenance/integration checks, docs checks, the 1/16-pane hover
+profile, and the render scaling profile. `just check` stops at Windows
+cross-lint because this machine has no configured Windows SDK. The release
+binary built and reports `0.9.3`, but `just bench-release-smoke` could not run
+because `pidstat` is not installed. Manual hover and release-binary smoke
+validation remain pending; no new binary was installed. These are local-source
+results, not evidence that the hosted v0.9.3 release workflow has run.
+
+The separate maintenance preparation passes 22 offline fork-release tests,
+3,885 Rust tests with 14 skipped, formatting/Clippy, maintenance/integration
+checks, and docs checks. Those Rust results cover the unpatched stable core in
+the maintenance tree, not the hover implementation. Its `just check` stops at
+the same missing Windows SDK gate.
 
 The original feature commit `3b0d3dc6`, based on
 `d2cb0961663582a5069b1528edb93a9a8b23e1bc`, remains a historical reference;
@@ -34,10 +56,10 @@ The v0.9.0 release source subsequently passed all five hosted optimized release
 builds; that is build evidence, not a replacement for manual smoke testing a new
 source.
 
-Published release:
+Previous published release:
 
 - [Codefriendly Herdr v0.9.0 — revision 1](https://github.com/codefriendly/herdr/releases/tag/codefriendly-v0.9.0-r1)
-  is published as latest and non-prerelease.
+  was published as latest and non-prerelease; v0.9.1 now supersedes it.
 - Source/tag commit: `7a7023194477e003adbb7d8dc1a0b86095104257`.
 - Maintenance/workflow commit: `9a4ce950`.
 - [Successful release run](https://github.com/codefriendly/herdr/actions/runs/34386141152):
@@ -60,9 +82,12 @@ runtime warnings and the `punycode`/`url.parse()` deprecations were absent. The
 updated fork release workflow has not been rerun.
 
 The published v0.9.0 workflow used `mlugg/setup-zig` v2.2.1 and retained its
-forced-Node-24 warning. The local v0.9.1 candidate instead follows upstream's
-`vercel-labs/setup-zig` v1.0.2 with Zig 0.16.0; that candidate workflow has not
-yet been run.
+forced-Node-24 warning. The v0.9.3 candidate uses upstream's
+`vercel-labs/setup-zig` v1.0.2 with Zig 0.16.0. Compared with v0.9.1, v0.9.3
+keeps the same Rust/Zig versions, release optimization, target matrix, and
+ConPTY packaging; the upstream workflow difference concerns applying release
+preparation back to master, not the fork build. No hosted build has run for the
+new source.
 
 Always verify upstream releases when selecting a future base; the release
 workflow checks the explicitly recorded tag, never follows `latest` or
@@ -115,7 +140,8 @@ fork/
         ├── 0001-feat-focus-panes-on-hover.patch
         ├── 0002-fix-preserve-hover-focus-ordering-and-interaction-gu.patch
         ├── 0003-refactor-simplify-hover-intent-and-test-setup.patch
-        └── 0004-fix-adapt-pane-hover-focus-to-v0.9.1-endpoint-dispat.patch
+        ├── 0004-fix-adapt-pane-hover-focus-to-v0.9.1-endpoint-dispat.patch
+        └── 0005-fix-port-pane-hover-focus-to-herdr-v0.9.3.patch
 ```
 
 `upstream-base` records the selected stable tag and its resolved full commit ID.
@@ -197,9 +223,9 @@ After separately authorizing and completing commits/pushes, dispatch
 
 - `source_sha`: the full lowercase integration commit recorded in
   `fork/profiles/codefriendly.toml` (currently
-  `4db001daa8879ad5794104cc024a2a0c587d461c`), not a branch/tag.
+  `8f9cbf62b67517b5fe32829e7abc5a92f52dcddf`), not a branch/tag.
 - `revision`: a previously unused positive integer without leading zeros. The
-  first Codefriendly release based on `v0.9.1` uses revision `1`.
+  first Codefriendly release based on `v0.9.3` uses revision `1`.
 
 The workflow reads metadata and `fork/release.py` from the immutable dispatched
 maintenance/workflow commit. It checks the upstream GitHub Release is published
@@ -214,7 +240,7 @@ patch equivalence alone does not prove behavioral correctness.
 
 All five targets build the same resolved integration SHA directly. Rust `1.96.1`,
 Zig `0.16.0`, ReleaseFast/SIMD, Linux musl/linker settings, and Windows ConPTY
-packaging follow `v0.9.1` release build settings.
+packaging follow `v0.9.3` release build settings.
 The workflow does not run local full checks, benchmarks, manual smoke tests,
 Nix checks, or upstream docs/distribution release checks. Release notes state
 these limits rather than attributing historical local results to a new source.
@@ -252,13 +278,13 @@ Distribution name: **Codefriendly Herdr**. Feature names belong in the patch
 inventory, not in the distribution's tag name.
 
 ```text
-Tag:   codefriendly-v0.9.1-r1
-Title: Codefriendly Herdr v0.9.1 — revision 1
+Tag:   codefriendly-v0.9.3-r1
+Title: Codefriendly Herdr v0.9.3 — revision 1
 ```
 
 A revised patch/build on the same upstream base becomes
-`codefriendly-v0.9.1-r2`. A new upstream stable base starts at revision 1, for
-example `codefriendly-v0.9.2-r1`. Never overwrite an existing release's source or
+`codefriendly-v0.9.3-r2`. A new upstream stable base starts at revision 1, for
+example `codefriendly-v0.9.4-r1`. Never overwrite an existing release's source or
 assets to represent a different build.
 
 The release body records:
@@ -287,7 +313,7 @@ it. Stable-based does not imply upstream endorsement or upstream-equivalent
 validation.
 
 Keep the upstream Cargo version unless a separate binary-identity change is
-agreed. Thus `herdr --version` may say `0.9.0`; the release tag and recorded source
+agreed. Thus `herdr --version` may say `0.9.3`; the release tag and recorded source
 commit distinguish the fork revision. Update personal installations through the
 Codefriendly installer/mytools, not the upstream Herdr updater, which may replace
 the patched binary with an official build.
