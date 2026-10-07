@@ -40,7 +40,18 @@ jobs:
 
       - name: Validate commit subjects
         if: github.event_name == 'push'
-        run: python3 scripts/conventional_commits.py --range "${{ github.event.before }}..${{ github.event.after }}"
+        run: |
+          set -euo pipefail
+          before="${{ github.event.before }}"
+          after="${{ github.event.after }}"
+          zero="0000000000000000000000000000000000000000"
+          # A rewritten stable-based fork branch does not retain the previous tip.
+          if [ "$before" = "$zero" ] || ! git cat-file -e "$before^{commit}" >/dev/null 2>&1; then
+            echo "Previous tip is unavailable; validating the pushed commit only."
+            python3 scripts/conventional_commits.py "$(git log -1 --format=%s "$after")"
+          else
+            python3 scripts/conventional_commits.py --range "$before..$after"
+          fi
 
       - name: Validate PR title
         if: github.event_name == 'pull_request'
