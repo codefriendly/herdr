@@ -901,6 +901,67 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
 }
 
 #[test]
+fn hover_focus_clears_pending_navigation_highlight_without_waiting_for_snapshot() {
+    let mut state = local_navigation_state(false);
+    state.config.focus_pane_on_hover = true;
+    let mut projected = workspaces(3);
+    let mut pane = projected.panes[0].clone();
+    pane.pane_id = "pane_2".into();
+    pane.focused = false;
+    projected.panes.push(pane);
+    state.set_snapshot(Box::new(projected));
+    let mut pane_surface = surface();
+    pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &Buffer::with_lines(["AAA BBB", "AAA BBB"]),
+        None,
+        &[],
+    );
+    pane_surface.panes[0].rect.width = 3;
+    pane_surface.panes[0].inner_rect.width = 3;
+    let mut pane = pane_surface.panes[0].clone();
+    pane.pane_id = "pane_2".into();
+    pane.focused = false;
+    pane.rect.x = 4;
+    pane.inner_rect.x = 4;
+    pane_surface.panes.push(pane);
+    state.set_pane_surface(pane_surface);
+    state.compose(100, 28).unwrap();
+
+    let navigation_id = request_local_navigation(&mut state, 2);
+    assert!(state.pending_workspace_highlight.is_some());
+    let pane = &state.hits.panes[1];
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: pane.inner_rect.x + 1,
+        row: pane.inner_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(
+        matches!(&outcome.actions[..], [ClientShellAction::Endpoint { request, .. }]
+        if matches!(&request.method, crate::api::schema::Method::PaneFocus(target)
+            if target.pane_id == "pane_2"))
+    );
+    assert!(
+        outcome.repaint,
+        "clear the speculative workspace highlight immediately"
+    );
+    assert!(state.pending_workspace_highlight.is_none());
+    state.handle_endpoint_result(
+        "boot-1",
+        &navigation_id,
+        Ok(crate::api::schema::ResponseResult::Ok {}),
+    );
+    assert!(
+        state.pending_workspace_highlight.is_none(),
+        "older completion cannot restore it"
+    );
+    assert_eq!(
+        state.snapshot.as_ref().unwrap().focused_pane_id.as_deref(),
+        Some("pane_1")
+    );
+}
+
+#[test]
 fn cancelled_close_does_not_restore_an_older_navigation_highlight() {
     let mut state = local_navigation_state(false);
     request_local_navigation(&mut state, 2);

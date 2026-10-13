@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn dispatch_client_shell_actions(
-    actions: Vec<shell::ClientShellAction>,
+    mut actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint_commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
     mut shell: Option<&mut shell::ClientShellState>,
@@ -10,6 +10,25 @@ pub(super) fn dispatch_client_shell_actions(
 ) -> Result<(Vec<crossterm::event::MouseEvent>, bool), ClientError> {
     let mut replay_mouse = Vec::new();
     let mut repaint = false;
+    if let Some(shell) = shell.as_deref_mut() {
+        for (endpoint_id, request_id) in shell.take_cancelled_unsent_endpoint_ids() {
+            // A single input batch can invalidate a hover before it even reaches
+            // EndpointCommands. Cancel that action as well as already queued work.
+            let before = actions.len();
+            actions.retain(|action| {
+                !matches!(action,
+                    shell::ClientShellAction::Endpoint { request, .. } if request.id == request_id
+                )
+            });
+            if endpoint_commands.cancel_queued(&endpoint_id, &request_id) || actions.len() != before
+            {
+                shell.cancel_unsent_hover_request(&request_id);
+            }
+        }
+        let mut follow_up = shell::ClientShellInput::default();
+        shell.flush_coalesced_hover_pane_focus(&mut follow_up);
+        actions.extend(follow_up.actions);
+    }
     for action in actions {
         match action {
             shell::ClientShellAction::Endpoint {
