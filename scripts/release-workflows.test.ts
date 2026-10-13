@@ -16,6 +16,26 @@ describe("official publishing workflow boundaries", () => {
     expect(load("ci").on.pull_request).toBeDefined();
   });
 
+  test("fork pushes tolerate rewritten history and upstream-only services", () => {
+    const commitCheck = load("ci").jobs["conventional-commits"].steps
+      .find((step: any) => step.name === "Validate commit subjects").run;
+    expect(commitCheck).toContain("git cat-file -e");
+    expect(commitCheck).toContain("validating the pushed commit only");
+
+    for (const [workflow, job] of [
+      ["distribution", "validate"],
+      ["website-deploy", "trigger"],
+      ["label-next-release-issues", "close"],
+    ] as const) {
+      expect(load(workflow).jobs[job].if).toBe("github.repository == 'herdrdev/herdr'");
+    }
+
+    const issues = load("label-next-release-issues").jobs.close.steps
+      .find((step: any) => step.name === "Close issues referenced by pushed commits").run;
+    expect(issues).toContain("git cat-file -e");
+    expect(issues).toContain("bodies=\"$(git log --format=%b");
+  });
+
   test("preview checks do not require a workstation Windows SDK", () => {
     const checks = preview.jobs.preflight.steps.find((step: any) => step.name === "Run checks");
     expect(checks.run.trim().split("\n")).toEqual(["just ci", "just docs-contract-test"]);

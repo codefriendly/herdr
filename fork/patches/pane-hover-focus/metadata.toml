@@ -1,0 +1,10 @@
+name = "pane-hover-focus"
+base_tag = "v0.9.5"
+base_commit = "2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01"
+source_branch = "pane-hover-focus"
+source_commit = "40cff2ee5b050a6cad0e9b2747cc1134984c782e"
+source_tree = "80e190bbb431131b8249af2e71fcead9002a8106"
+dependencies = []
+patches = [
+  "0001-feat-port-pane-hover-focus-to-herdr-v0.9.5.patch",
+]

@@ -1,0 +1,6 @@
+name = "codefriendly"
+base_tag = "v0.9.5"
+base_commit = "2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01"
+source_branch = "integration/codefriendly-release"
+source_commit = "78b1b52b6f57ba63a818519e06e6a878d06bb430"
+source_tree = "80e190bbb431131b8249af2e71fcead9002a8106"

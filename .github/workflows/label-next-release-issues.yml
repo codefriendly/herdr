@@ -13,6 +13,7 @@ env:
 
 jobs:
   close:
+    if: github.repository == 'herdrdev/herdr'
     runs-on: ubuntu-latest
 
     steps:
@@ -34,16 +35,17 @@ jobs:
           AFTER="${{ github.sha }}"
           ZERO_SHA="0000000000000000000000000000000000000000"
 
-          if [ "$BEFORE" = "$ZERO_SHA" ]; then
+          if [ "$BEFORE" = "$ZERO_SHA" ] || ! git cat-file -e "$BEFORE^{commit}" >/dev/null 2>&1; then
             RANGE_ARGS=(-1 "$AFTER")
-            echo "Scanning latest commit $AFTER for refs #<issue> lines."
+            echo "Previous tip unavailable; scanning latest commit $AFTER for refs #<issue> lines."
           else
             RANGE_ARGS=("$BEFORE..$AFTER")
             echo "Scanning pushed commits in $BEFORE..$AFTER for refs #<issue> lines."
           fi
 
+          bodies="$(git log --format=%b "${RANGE_ARGS[@]}")"
           mapfile -t ISSUES < <(
-            git log --format=%b "${RANGE_ARGS[@]}" \
+            printf '%s\n' "$bodies" \
               | perl -ne 'print "$1\n" if /^\s*refs\s+#([0-9]+)\s*$/i' \
               | sort -nu
           )
