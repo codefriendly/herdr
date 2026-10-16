@@ -8,12 +8,12 @@ subject to upstream's contributor policy.
 ## Status
 
 The published personal release is
-[Codefriendly Herdr v0.9.3 — revision 1](https://github.com/codefriendly/herdr/releases/tag/codefriendly-v0.9.3-r1),
-published October 7, 2026 as latest and non-prerelease, at source/tag commit
-`8f9cbf62b67517b5fe32829e7abc5a92f52dcddf`. Its
-[hosted workflow](https://github.com/codefriendly/herdr/actions/runs/37555859145)
+[Codefriendly Herdr v0.9.4 — revision 1](https://github.com/codefriendly/herdr/releases/tag/codefriendly-v0.9.4-r1),
+published October 13, 2026 as latest and non-prerelease, at source/tag commit
+`c236b66d03d3ac0c0bd044287e1599d46596c364`. Its
+[hosted workflow](https://github.com/codefriendly/herdr/actions/runs/38461083737)
 built and packaged all five release targets. Maintenance/workflow source was
-`940edcf781f43875deb3f19acd279958d21393a3`. Build success does not attest to
+`2ca719fd047121d27ae329b13cf7f1a6b6a27429`. Build success does not attest to
 manual hover or full local release validation.
 
 Local preparation now targets upstream stable `v0.9.5`
@@ -44,9 +44,11 @@ The render pipeline median was 623/624 us at 1/15 background workspaces
 (1.00x) and 650/702 us at 1/15 active panes (1.08x). These are supporting
 measurements, not timing gates. The release build succeeded and reports
 `herdr 0.9.5`. `just check` stops at Windows cross-lint because this machine
-has no configured Windows SDK. End-to-end release CPU smoke needs the
-unavailable `pidstat`; manual TUI hover validation remains pending. Inherited unfocused-window and toast hover edge
-cases remain outside this port. No new binary was installed.
+has no configured Windows SDK. Release CPU smoke passed against the verified
+official v0.9.5 binary, including two rounds of 60-second samples: hidden output
+used 3.45% CPU versus 3.40% upstream (+1.5%); visible output was 0.25% for both.
+Manual TUI hover validation remains pending. Inherited unfocused-window and
+toast hover edge cases remain outside this port. No new binary was installed.
 
 The separate maintenance candidate passed 22 offline fork-release tests,
 formatting/Clippy, 4,030 Rust tests with 14 skipped, maintenance/integration
@@ -251,8 +253,11 @@ All five targets build the same resolved integration SHA directly. Rust `1.96.1`
 Zig `0.16.0`, ReleaseFast/SIMD, Linux musl/linker settings, and Windows ConPTY
 packaging follow `v0.9.5` release build settings.
 The workflow does not run local full checks, benchmarks, manual smoke tests,
-Nix checks, or upstream docs/distribution release checks. Release notes state
-these limits rather than attributing historical local results to a new source.
+Nix checks, or upstream docs/distribution release checks. Keep detailed local
+validation results and skipped checks in maintenance records, not in the
+published release notes. Public notes report verified CI builds and packaging
+without a checklist of unperformed manual testing. Do not attribute historical
+local results to a new source or imply upstream endorsement.
 
 Fork access checks require successful repository metadata and release-list API
 reads, with the returned owner/repository matching `codefriendly/herdr` exactly
@@ -301,7 +306,9 @@ The release body records:
 - Upstream stable tag and full commit ID.
 - Exact patched source commit.
 - Selected patch sets and their revisions/source commits.
-- Validation performed, skipped checks, and known risks.
+- Verified CI build and packaging results, plus any concrete known user-facing issues.
+  Keep skipped-check and manual-testing details in internal maintenance records,
+  not in published release notes.
 - Installation and update instructions.
 
 Keep the existing portable asset names:

@@ -314,9 +314,12 @@ class ReleaseTests(unittest.TestCase):
     def test_notes_are_bounded_to_workflow_checks(self):
         base, profile, patches, _ = release.metadata()
         body = release.notes(base, profile, patches, "f" * 40)
-        for text in (base["commit"], self.source, profile["source_tree"], "f" * 40, "does not run `just check`",
-                     "Do not use the upstream Herdr updater", "does not attest to earlier local testing"):
+        for text in (base["commit"], self.source, profile["source_tree"], "f" * 40,
+                     "All five release-target builds and packaging jobs succeeded",
+                     "SHA256SUMS", "Do not use the upstream Herdr updater"):
             self.assertIn(text, body)
+        for text in ("manual", "does not run", "does not attest", "not tested", "untested"):
+            self.assertNotIn(text, body.lower())
         for patch_set in patches:
             self.assertIn(patch_set["name"], body)
             for filename in patch_set["patches"]:

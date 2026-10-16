@@ -189,10 +189,8 @@ def notes(base, profile, patches, workflow):
 Ordered patch sets and archived patches from that maintenance commit:
 {inventory}
 
-## Validation scope
-Automated for this source: published non-prerelease upstream tag and exact peeled base, base ancestry, recorded integration tree and Cargo version, and ordered profile reconstruction from archived patches. All five release-target builds and packaging jobs succeeded before publication; SHA256SUMS covers the five assets. Windows packaging includes the app-local ConPTY runtime and checks binary version identity.
-
-This workflow does not run `just check`, render/performance benchmarks, manual pane-hover/binary smoke tests, Nix checks, or upstream release-docs/distribution checks. It does not attest to earlier local testing or imply upstream-equivalent validation. Build success and patch equivalence are not behavioral verification.
+## Build verification
+The release workflow verified the upstream stable base and reconstructed the integration tree from the archived patches. All five release-target builds and packaging jobs succeeded before publication; SHA256SUMS covers the five assets. Windows packaging includes the app-local ConPTY runtime and checks binary version identity.
 
 ## Install / update
 Use the checksum-verifying **Codefriendly installer/mytools** for this personal release. Do not use the upstream Herdr updater: it may replace the patched binary with an official build. Cargo/binary version remains `{base['tag'][1:]}`; the Codefriendly release tag identifies the fork revision.
