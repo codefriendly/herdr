@@ -108,6 +108,37 @@ fn last_pane_close_waits_for_keyboard_or_mouse_confirmation() {
 }
 
 #[test]
+fn hover_last_pane_close_confirmation_discards_pointer_intent() {
+    for menu in [false, true] {
+        let mut state = close_state(true, 1);
+        state.config.focus_pane_on_hover = true;
+        assert!(state.hover_pane_focus_is_eligible());
+        // Retained pointer intent must not survive the new last-pane overlay,
+        // even if confirmation is cancelled before a focus result arrives.
+        state.desired_hover_pane_id = Some("pane_1".into());
+        let mut requested = request_close(&mut state, menu);
+        assert!(matches!(
+            state.overlay,
+            Some(ClientShellOverlay::ConfirmClose(_))
+        ));
+        assert!(!state.hover_pane_focus_is_eligible());
+        state.flush_coalesced_hover_pane_focus(&mut requested);
+        assert!(state.desired_hover_pane_id.is_none());
+        assert_no_close(&requested);
+        assert!(requested.actions.is_empty());
+
+        state.compose(106, 24).unwrap();
+        let cancel = state.hits.overlay_cancel;
+        let mut cancelled = click(&mut state, cancel);
+        state.flush_coalesced_hover_pane_focus(&mut cancelled);
+        assert!(state.overlay.is_none());
+        assert!(state.hover_pane_focus_is_eligible());
+        assert!(cancelled.actions.is_empty());
+        assert!(state.desired_hover_pane_id.is_none());
+    }
+}
+
+#[test]
 fn last_pane_close_confirmation_can_be_cancelled() {
     for mouse in [false, true] {
         let mut state = close_state(true, 1);
