@@ -54,18 +54,19 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             name: herdr-linux-x86_64
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-            name: herdr-linux-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            name: herdr-macos-x86_64
+          # Optional targets: also uncomment matching assets in fork/release.py.
+          # - target: aarch64-unknown-linux-musl
+          #   os: ubuntu-latest
+          #   name: herdr-linux-aarch64
+          # - target: x86_64-apple-darwin
+          #   os: macos-latest
+          #   name: herdr-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
             name: herdr-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-2022
-            name: herdr-windows-x86_64.zip
+          # - target: x86_64-pc-windows-msvc
+          #   os: windows-2022
+          #   name: herdr-windows-x86_64.zip
 
     runs-on: ${{ matrix.os }}
     env:

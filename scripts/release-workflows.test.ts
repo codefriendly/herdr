@@ -36,6 +36,22 @@ describe("official publishing workflow boundaries", () => {
     expect(issues).toContain("bodies=\"$(git log --format=%b");
   });
 
+  test("fork release targets match publication assets and optional Windows CI", () => {
+    const forkRelease = load("fork-release");
+    const releaseHelper = readFileSync(new URL("../fork/release.py", import.meta.url), "utf8");
+    const assetBlock = releaseHelper.split("ASSETS = (\n")[1].split("\n)")[0];
+    const assets = [...assetBlock.matchAll(/^    "([^"]+)",/gm)].map((match) => match[1]);
+    const targets = forkRelease.jobs.build.strategy.matrix.include;
+    expect(targets.map((target: any) => target.name).sort()).toEqual(assets.sort());
+    expect(assets).toContain("herdr-linux-x86_64");
+    expect(assets).toContain("herdr-macos-aarch64");
+
+    const ci = load("ci");
+    const windowsEnabled = ci.jobs.check.strategy.matrix.include
+      .some((entry: any) => entry.kind === "windows");
+    expect(Boolean(ci.jobs["windows-conpty-package"])).toBe(windowsEnabled);
+  });
+
   test("preview checks do not require a workstation Windows SDK", () => {
     const checks = preview.jobs.preflight.steps.find((step: any) => step.name === "Run checks");
     expect(checks.run.trim().split("\n")).toEqual(["just ci", "just docs-contract-test"]);

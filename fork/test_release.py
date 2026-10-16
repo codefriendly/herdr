@@ -315,16 +315,30 @@ class ReleaseTests(unittest.TestCase):
         base, profile, patches, _ = release.metadata()
         body = release.notes(base, profile, patches, "f" * 40)
         for text in (base["commit"], self.source, profile["source_tree"], "f" * 40,
-                     "All five release-target builds and packaging jobs succeeded",
+                     "All selected release-target builds and packaging jobs succeeded",
                      "SHA256SUMS", "Do not use the upstream Herdr updater"):
             self.assertIn(text, body)
-        for text in ("manual", "does not run", "does not attest", "not tested", "untested"):
+        for text in ("manual", "does not run", "does not attest", "not tested", "untested",
+                     "installer/mytools"):
             self.assertNotIn(text, body.lower())
         for patch_set in patches:
             self.assertIn(patch_set["name"], body)
             for filename in patch_set["patches"]:
                 self.assertIn(filename, body)
         self.assertNotIn("3312", body)
+        self.assertEqual("Windows packaging" in body, "herdr-windows-x86_64.zip" in release.ASSETS)
+        with patch.object(release, "ASSETS", ("herdr-windows-x86_64.zip",)):
+            windows_body = release.notes(base, profile, patches, "f" * 40)
+        self.assertIn("Windows packaging includes the app-local ConPTY runtime", windows_body)
+        self.assertIn("Get-FileHash FILE -Algorithm SHA256", windows_body)
+        self.assertIn("keep the bundled `conpty` directory next to `herdr.exe`", windows_body)
+        with patch.object(release, "ASSETS", ("herdr-linux-x86_64",)):
+            linux_body = release.notes(base, profile, patches, "f" * 40)
+        self.assertNotIn("Windows packaging", linux_body)
+        self.assertNotIn("Get-FileHash", linux_body)
+        self.assertNotIn("herdr.exe", linux_body)
+        for text in ("sha256sum FILE", "shasum -a 256 FILE", "chmod +x FILE", "~/.local/bin"):
+            self.assertIn(text, linux_body)
 
     def test_assets_exact_inventory_and_checksums(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -334,7 +348,7 @@ class ReleaseTests(unittest.TestCase):
                 (Path("artifacts") / name).write_bytes(name.encode())
             output = release.prepare_assets()
             self.assertEqual({p.name for p in output.iterdir()}, {*release.ASSETS, "SHA256SUMS"})
-            self.assertEqual(len((output / "SHA256SUMS").read_text().splitlines()), 5)
+            self.assertEqual(len((output / "SHA256SUMS").read_text().splitlines()), len(release.ASSETS))
         os.chdir(ROOT)
         with tempfile.TemporaryDirectory() as temp:
             os.chdir(temp)
@@ -390,7 +404,7 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(calls[0][1]["method"], "POST")
             self.assertEqual(calls[1][1]["data"]["name"], "Codefriendly Herdr v0.9.5 — revision 1")
             uploads = [c for c in calls if "/assets?name=" in c[0]]
-            self.assertEqual(len(uploads), 6)
+            self.assertEqual(len(uploads), len(release.ASSETS) + 1)
             self.assertTrue(all(c[1]["method"] == "POST" and "/releases/42/" in c[0] for c in uploads))
             self.assertEqual(calls[-1][1], {"method": "PATCH", "data": {"draft": False, "make_latest": "true"}})
             with patch.dict(os.environ, env), patch.object(release, "prepare_assets", return_value=assets), \

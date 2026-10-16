@@ -249,9 +249,16 @@ archive to an isolated Git index to prove tree equivalence. Missing API access,
 metadata, source history, or stable-release evidence fails closed. Ancestry or
 patch equivalence alone does not prove behavioral correctness.
 
-All five targets build the same resolved integration SHA directly. Rust `1.96.1`,
-Zig `0.16.0`, ReleaseFast/SIMD, Linux musl/linker settings, and Windows ConPTY
-packaging follow `v0.9.5` release build settings.
+Future releases build Linux x86_64 and macOS Apple Silicon from the same resolved
+integration SHA. Linux ARM64, Intel macOS, and Windows entries remain commented
+out in `.github/workflows/fork-release.yml` and `fork/release.py::ASSETS`;
+uncomment both matching entries to restore a release target. CI keeps Linux and
+macOS checks; the Windows matrix entry and separate ConPTY packaging job remain
+commented out in `.github/workflows/ci.yml` for easy restoration. Existing
+five-target releases and in-flight runs are unaffected.
+
+Rust `1.96.1`, Zig `0.16.0`, ReleaseFast/SIMD, Linux musl/linker settings, and
+retained Windows ConPTY packaging follow `v0.9.5` release build settings.
 The workflow does not run local full checks, benchmarks, manual smoke tests,
 Nix checks, or upstream docs/distribution release checks. Keep detailed local
 validation results and skipped checks in maintenance records, not in the
@@ -309,20 +316,22 @@ The release body records:
 - Verified CI build and packaging results, plus any concrete known user-facing issues.
   Keep skipped-check and manual-testing details in internal maintenance records,
   not in published release notes.
-- Installation and update instructions.
+- Self-contained installation and update instructions: download a matching
+  release asset, verify it against `SHA256SUMS`, and install it on `PATH`.
+  For Windows assets, preserve the entire ZIP contents, including ConPTY.
+  Never refer public readers to the private Codefriendly installer/mytools.
 
-Keep the existing portable asset names:
+Keep the existing portable names for enabled release assets:
 
 ```text
 herdr-linux-x86_64
-herdr-linux-aarch64
-herdr-macos-x86_64
 herdr-macos-aarch64
-herdr-windows-x86_64.zip
 SHA256SUMS
 ```
 
-Windows archives include the app-local ConPTY runtime. Publish successful
+Optional asset names remain `herdr-linux-aarch64`, `herdr-macos-x86_64`, and
+`herdr-windows-x86_64.zip`. Restored Windows archives must include the app-local
+ConPTY runtime. Publish successful
 personal releases as non-prereleases and explicitly mark the intended release
 latest so the existing checksum-verifying Codefriendly installer can discover
 it. Stable-based does not imply upstream endorsement or upstream-equivalent

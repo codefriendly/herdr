@@ -17,10 +17,11 @@ REPOSITORY = "codefriendly/herdr"
 UPSTREAM = "herdrdev/herdr"
 ASSETS = (
     "herdr-linux-x86_64",
-    "herdr-linux-aarch64",
-    "herdr-macos-x86_64",
+    # Optional targets: uncomment matching entries in fork-release.yml too.
+    # "herdr-linux-aarch64",
+    # "herdr-macos-x86_64",
     "herdr-macos-aarch64",
-    "herdr-windows-x86_64.zip",
+    # "herdr-windows-x86_64.zip",
 )
 
 
@@ -167,6 +168,21 @@ def verify_source(base, profile, patches):
         require(git("write-tree", env=env) == profile["source_tree"], "Archived profile does not reproduce the source tree")
 
 
+def installation_notes(version, assets):
+    windows = "herdr-windows-x86_64.zip" in assets
+    windows_checksum = ", or `Get-FileHash FILE -Algorithm SHA256` on Windows" if windows else ""
+    windows_install = (
+        "\n\nOn Windows, extract the entire ZIP and keep the bundled `conpty` directory next to `herdr.exe`. Do not copy only the executable."
+        if windows else ""
+    )
+    return f"""Download the asset matching your OS and architecture, plus `SHA256SUMS`, from this release. Before running it, compare its SHA-256 hash with the matching entry in `SHA256SUMS`: use `sha256sum FILE` on Linux, `shasum -a 256 FILE` on macOS{windows_checksum} (replace `FILE` with the downloaded filename).
+
+On Linux/macOS, make the downloaded binary executable with `chmod +x FILE`, rename it to `herdr`, and place it in a directory on your `PATH`, such as `~/.local/bin`.{windows_install}
+
+To update, stop your existing Herdr processes before replacing the installation with a newer personal release. Do not use the upstream Herdr updater: it may replace the patched binary with an official build. Cargo/binary version remains `{version}`; the Codefriendly release tag identifies the fork revision.
+"""
+
+
 def notes(base, profile, patches, workflow):
     inventory_lines = []
     for patch in patches:
@@ -177,6 +193,10 @@ def notes(base, profile, patches, workflow):
             for filename in patch["patches"]
         )
     inventory = "\n".join(inventory_lines)
+    windows_verification = (
+        " Windows packaging includes the app-local ConPTY runtime and checks binary version identity."
+        if "herdr-windows-x86_64.zip" in ASSETS else ""
+    )
     return f"""Personal Codefriendly Herdr build; not an upstream release or endorsement.
 
 ## Provenance
@@ -190,10 +210,10 @@ Ordered patch sets and archived patches from that maintenance commit:
 {inventory}
 
 ## Build verification
-The release workflow verified the upstream stable base and reconstructed the integration tree from the archived patches. All five release-target builds and packaging jobs succeeded before publication; SHA256SUMS covers the five assets. Windows packaging includes the app-local ConPTY runtime and checks binary version identity.
+The release workflow verified the upstream stable base and reconstructed the integration tree from the archived patches. All selected release-target builds and packaging jobs succeeded before publication; SHA256SUMS covers the release assets.{windows_verification}
 
 ## Install / update
-Use the checksum-verifying **Codefriendly installer/mytools** for this personal release. Do not use the upstream Herdr updater: it may replace the patched binary with an official build. Cargo/binary version remains `{base['tag'][1:]}`; the Codefriendly release tag identifies the fork revision.
+{installation_notes(base['tag'][1:], ASSETS)}
 """
 
 
